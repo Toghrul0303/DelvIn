@@ -1805,7 +1805,7 @@ export function ChatPane({
       <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
         <TutorAvatar className="size-11" />
         <div className="min-w-0">
-          <h2 className="truncate font-display text-sm font-semibold">Mr. Locky</h2>
+          <h2 className="truncate font-sans text-sm font-semibold leading-none">Delvin</h2>
         </div>
         <ModeToggle disabled={isSending} />
         <button

@@ -10,16 +10,20 @@ import { LOCALES, type Locale } from "@/lib/i18n"
 
 function Logo() {
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src="/logo-right.svg"
-      alt="LockNLearn"
-      className="h-9 max-w-none shrink-0 overflow-visible object-contain"
-      style={{
-        width: "auto",
-        objectViewBox: "inset(38.76% 7.66% 40.27% 9.89%)",
-      }}
-    />
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/DelvIn_light_mode_transparent.png"
+        alt="DelvIn"
+        className="h-6 max-h-6 w-auto shrink-0 object-contain dark:hidden"
+      />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/DelvIn_dark_mode_transparent.png"
+        alt=""
+        className="hidden h-6 max-h-6 w-auto shrink-0 object-contain dark:block"
+      />
+    </>
   )
 }
 
