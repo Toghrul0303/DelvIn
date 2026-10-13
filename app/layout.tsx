@@ -17,12 +17,12 @@ const spaceGrotesk = Space_Grotesk({
 })
 
 export const metadata: Metadata = {
-  title: 'LockNLearn — AI Academic Workspace',
+  title: 'DelvIn — AI Academic Workspace',
   description:
     'A focused, AI-powered study workspace for students: task tracking, a smart chat tutor, an interactive graph & scientific keypad, and a distraction-free Focus Mode.',
   icons: {
-    icon: [{ url: '/logo.svg', type: 'image/svg+xml' }],
-    apple: '/logo.svg',
+    icon: [{ url: '/avatar.png', type: 'image/png' }],
+    apple: '/avatar.png',
   },
 }
 

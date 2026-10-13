@@ -70,13 +70,13 @@ const en = {
     skipped: "Skipped",
   },
   chat: {
-    aria: "Mr. Locky chat",
+    aria: "Delvin chat",
     placeholder: "Ask about this problem…",
     send: "Send message",
     stop: "Stop generating",
     templates: "Prompt templates",
     attach: "Attach a document or image",
-    thinking: "Mr. Locky is thinking",
+    thinking: "Delvin is thinking",
     aborted: "You stopped this response",
     redo: "Try again",
     why: "Why?",
@@ -179,7 +179,7 @@ const en = {
     currentTask: "Current Task",
     readyTitle: "Active Workspace — Ready for queries",
     readySubtitle:
-      "Ask LockNLearn Tutor a question in the chat to see it tracked here, alongside any charts, calculations, or diagrams it generates.",
+      "Ask DelvIn Tutor a question in the chat to see it tracked here, alongside any charts, calculations, or diagrams it generates.",
   },
   folders: {
     formula: "FormulaBox",
@@ -189,7 +189,7 @@ const en = {
   },
   collections: {
     title: "Memory Box · Collections",
-    subtitle: "Everything you've saved from LockNLearn Tutor.",
+    subtitle: "Everything you've saved from DelvIn Tutor.",
     backToDesk: "Back to Workspace",
     savedFormulas: "Saved Formulas",
     savedGraphs: "Saved Graphs",
@@ -296,13 +296,13 @@ const az: Messages = {
     skipped: "Keçilib",
   },
   chat: {
-    aria: "Mr. Locky söhbəti",
+    aria: "Delvin söhbəti",
     placeholder: "Bu sual haqqında soruş…",
     send: "Mesaj göndər",
     stop: "Generasiyanı dayandır",
     templates: "Prompt şablonları",
     attach: "Sənəd və ya şəkil əlavə et",
-    thinking: "Mr. Locky düşünür",
+    thinking: "Delvin düşünür",
     aborted: "Cavab dayandırıldı",
     redo: "Yenidən cəhd et",
     why: "Niyə?",
@@ -405,7 +405,7 @@ const az: Messages = {
     currentTask: "Cari tapşırıq",
     readyTitle: "Aktiv iş sahəsi — sorğular üçün hazırdır",
     readySubtitle:
-      "LockNLearn repetitoruna sual verin — izləmə, qrafiklər, hesablamalar və diaqramlar burada görünəcək.",
+      "DelvIn repetitoruna sual verin — izləmə, qrafiklər, hesablamalar və diaqramlar burada görünəcək.",
   },
   folders: {
     formula: "FormulaBox",
@@ -415,7 +415,7 @@ const az: Messages = {
   },
   collections: {
     title: "Memory Box · Kolleksiyalar",
-    subtitle: "LockNLearn repetitorundan saxladıqlarınız.",
+    subtitle: "DelvIn repetitorundan saxladıqlarınız.",
     backToDesk: "İş sahəsinə qayıt",
     savedFormulas: "Saxlanmış formullar",
     savedGraphs: "Saxlanmış qrafiklər",
@@ -520,13 +520,13 @@ const tr: Messages = {
     skipped: "Atlandı",
   },
   chat: {
-    aria: "Mr. Locky sohbeti",
+    aria: "Delvin sohbeti",
     placeholder: "Bu problem hakkında sor…",
     send: "Mesaj gönder",
     stop: "Üretimi durdur",
     templates: "Komut şablonları",
     attach: "Belge veya görüntü ekle",
-    thinking: "Mr. Locky düşünüyor",
+    thinking: "Delvin düşünüyor",
     aborted: "Yanıt durduruldu",
     redo: "Yeniden dene",
     why: "Neden?",
@@ -629,7 +629,7 @@ const tr: Messages = {
     currentTask: "Güncel görev",
     readyTitle: "Aktif çalışma alanı — sorgular için hazır",
     readySubtitle:
-      "Sohbette LockNLearn eğitmene bir soru sorun; izleme, grafikler, hesaplamalar ve diyagramlar burada görünür.",
+      "Sohbette DelvIn eğitmene bir soru sorun; izleme, grafikler, hesaplamalar ve diyagramlar burada görünür.",
   },
   folders: {
     formula: "FormulaBox",
@@ -639,7 +639,7 @@ const tr: Messages = {
   },
   collections: {
     title: "Memory Box · Koleksiyonlar",
-    subtitle: "LockNLearn öğretmenden kaydettikleriniz.",
+    subtitle: "DelvIn öğretmenden kaydettikleriniz.",
     backToDesk: "Çalışma alanına dön",
     savedFormulas: "Kayıtlı formüller",
     savedGraphs: "Kayıtlı grafikler",
@@ -744,13 +744,13 @@ const ru: Messages = {
     skipped: "Пропущено",
   },
   chat: {
-    aria: "Чат Mr. Locky",
+    aria: "Чат Delvin",
     placeholder: "Спросите об этой задаче…",
     send: "Отправить сообщение",
     stop: "Остановить генерацию",
     templates: "Шаблоны запросов",
     attach: "Прикрепить документ или изображение",
-    thinking: "Mr. Locky думает",
+    thinking: "Delvin думает",
     aborted: "Ответ остановлен",
     redo: "Повторить",
     why: "Почему?",
@@ -853,7 +853,7 @@ const ru: Messages = {
     currentTask: "Текущая задача",
     readyTitle: "Активное рабочее пространство — готово к запросам",
     readySubtitle:
-      "Задайте вопрос репетитору LockNLearn в чате — отслеживание, графики, расчёты и схемы появятся здесь.",
+      "Задайте вопрос репетитору DelvIn в чате — отслеживание, графики, расчёты и схемы появятся здесь.",
   },
   folders: {
     formula: "FormulaBox",
@@ -863,7 +863,7 @@ const ru: Messages = {
   },
   collections: {
     title: "Memory Box · Коллекции",
-    subtitle: "Всё, что вы сохранили у репетитора LockNLearn.",
+    subtitle: "Всё, что вы сохранили у репетитора DelvIn.",
     backToDesk: "Назад к рабочему пространству",
     savedFormulas: "Сохранённые формулы",
     savedGraphs: "Сохранённые графики",
