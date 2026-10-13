@@ -220,7 +220,7 @@ class DeskState(BaseModel):
     steps: List[CalculationStep] = []
     graph: Optional[GraphData] = None
 
-class LockNLearnPayload(BaseModel):
+class DelvInPayload(BaseModel):
     """Wire-level contract streamed to the frontend over SSE (see main.py).
 
     `desk_update` is intentionally a plain `dict`, NOT `DeskState`. The

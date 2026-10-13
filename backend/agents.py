@@ -824,7 +824,7 @@ chat_worker_vision_llm = _gemini_then_deepseek(
     None,
 )
 
-CHAT_WORKER_SYSTEM_PROMPT = f"""You are LockNLearn's Chat Worker — a friendly, knowledgeable study companion handling greetings, chitchat, sign-offs, trivial general-knowledge questions, and quick visual analysis of attached images (whiteboard photos, handwritten notes, diagrams). You have no tools and no routing decisions to make (that has already been decided for you). Follow the active study mode for how complete or withheld your answer should be.
+CHAT_WORKER_SYSTEM_PROMPT = f"""You are DelvIn's Chat Worker — a friendly, knowledgeable study companion handling greetings, chitchat, sign-offs, trivial general-knowledge questions, and quick visual analysis of attached images (whiteboard photos, handwritten notes, diagrams). You have no tools and no routing decisions to make (that has already been decided for you). Follow the active study mode for how complete or withheld your answer should be.
 
 {STRICT_LANGUAGE_RULE}
 
@@ -862,7 +862,7 @@ doc_worker_llm = _deepseek_then_gemini(
     ).bind_tools(doc_worker_tools),
 )
 
-DOC_WORKER_SYSTEM_PROMPT = f"""You are LockNLearn's Doc Worker — a specialist focused EXCLUSIVELY on parsing and answering questions from uploaded documents (.pdf/.docx/.pptx). You have no other responsibilities: no calculations, no web search, no chitchat, no routing decisions (that has already been decided for you).
+DOC_WORKER_SYSTEM_PROMPT = f"""You are DelvIn's Doc Worker — a specialist focused EXCLUSIVELY on parsing and answering questions from uploaded documents (.pdf/.docx/.pptx). You have no other responsibilities: no calculations, no web search, no chitchat, no routing decisions (that has already been decided for you).
 
 {STRICT_LANGUAGE_RULE}
 
@@ -944,7 +944,7 @@ math_worker_llm = _deepseek_then_gemini(
 def _build_math_worker_prompt(socratic: bool) -> str:
     study_mode_rule = STUDY_MODE_RULE_SOCRATIC_ONLY if socratic else STUDY_MODE_RULE_DETAILED_ONLY
     socratic_reasoning_rule = SOCRATIC_REASONING_RULE if socratic else ""
-    return f"""You are LockNLearn's Math/Execution Worker — a specialist focused EXCLUSIVELY on mathematical modeling, calculations, statistics, chart generation, and physics/math line-art diagrams for the central Desk workspace. You have no other responsibilities: no document parsing, no web search, no chitchat, no routing decisions (that has already been decided for you).
+    return f"""You are DelvIn's Math/Execution Worker — a specialist focused EXCLUSIVELY on mathematical modeling, calculations, statistics, chart generation, and physics/math line-art diagrams for the central Desk workspace. You have no other responsibilities: no document parsing, no web search, no chitchat, no routing decisions (that has already been decided for you).
 
 {STRICT_LANGUAGE_RULE}
 
@@ -1278,7 +1278,7 @@ web_worker_llm = _deepseek_then_gemini(
     ).bind_tools(web_worker_tools),
 )
 
-WEB_WORKER_SYSTEM_PROMPT = f"""You are LockNLearn's Web Research Worker — a specialist focused EXCLUSIVELY on live web search for academic literature, citations, and current events/news. You have no other responsibilities: no document parsing, no calculations, no chitchat, no routing decisions (that has already been decided for you).
+WEB_WORKER_SYSTEM_PROMPT = f"""You are DelvIn's Web Research Worker — a specialist focused EXCLUSIVELY on live web search for academic literature, citations, and current events/news. You have no other responsibilities: no document parsing, no calculations, no chitchat, no routing decisions (that has already been decided for you).
 
 {STRICT_LANGUAGE_RULE}
 

@@ -199,7 +199,7 @@ export const DeskEditor = memo(function DeskEditor({
   return (
     <div className="desk-tldraw absolute inset-0">
       <DeskTldraw
-        key="locknlearn-desk"
+        key="DelvIn-desk"
         store={stableStore}
         components={deskTldrawComponents}
         overrides={deskUiOverrides}
