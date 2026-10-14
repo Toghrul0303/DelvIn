@@ -1,25 +1,20 @@
-'use client'
-
-import { useState } from 'react'
 import {
   ArrowRight,
   BookOpen,
   Calculator,
   Check,
-  ChevronDown,
   Clock3,
-  Globe2,
   GraduationCap,
   Lightbulb,
   ListChecks,
-  Menu,
   MousePointer2,
   NotebookTabs,
   PanelTop,
   Sparkles,
   Target,
-  X,
 } from 'lucide-react'
+import { SiteFooter } from '@/components/site-footer'
+import { SiteHeader } from '@/components/site-header'
 
 const features = [
   {
@@ -66,34 +61,9 @@ const plans = [
 ]
 
 export default function Page() {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [languageOpen, setLanguageOpen] = useState(false)
-  const [language, setLanguage] = useState('EN')
-
   return (
     <main className="min-h-screen overflow-hidden bg-[#fbfbfd] text-[#292638]">
-      <header className="sticky top-0 z-50 border-b border-[#ebe8f0]/90 bg-[#fbfbfd]/90 backdrop-blur-xl">
-        <div className="mx-auto flex h-[72px] max-w-7xl items-center justify-between px-5 sm:px-8 lg:px-10">
-          <a href="#top" className="flex items-center" aria-label="DelvIn home">
-            <img src="/DelvIn_light_mode_transparent.png" alt="DelvIn" className="h-6 max-h-6 w-auto shrink-0 object-contain dark:hidden" />
-            <img src="/DelvIn_dark_mode_transparent.png" alt="" className="hidden h-6 max-h-6 w-auto shrink-0 object-contain dark:block" />
-          </a>
-          <button className="rounded-lg p-2 text-[#6d687b] md:hidden" onClick={() => setMenuOpen(!menuOpen)} aria-label="Toggle menu">
-            {menuOpen ? <X size={21} /> : <Menu size={21} />}
-          </button>
-          <nav className={`${menuOpen ? 'flex' : 'hidden'} absolute left-4 right-4 top-[82px] flex-col gap-5 rounded-2xl border border-[#e8e4ee] bg-white p-5 shadow-xl md:static md:flex md:flex-row md:items-center md:gap-8 md:border-0 md:bg-transparent md:p-0 md:shadow-none`}>
-            <a href="#top" className="text-sm font-medium text-[#a82e83]">Homepage</a>
-            <a href="/workspace" className="text-sm font-medium text-[#706b7c] transition-colors hover:text-[#a82e83]">Workspace</a>
-            <div className="relative">
-              <button onClick={() => setLanguageOpen(!languageOpen)} className="flex items-center gap-2 text-sm font-medium text-[#706b7c]" aria-expanded={languageOpen}>
-                <Globe2 size={16} /> {language} <ChevronDown size={14} />
-              </button>
-              {languageOpen && <div className="absolute right-0 top-8 z-10 w-24 rounded-xl border border-[#e8e4ee] bg-white p-1.5 shadow-lg">{['EN', 'AZ', 'TR', 'RU'].map((item) => <button key={item} onClick={() => { setLanguage(item); setLanguageOpen(false) }} className="block w-full rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-[#faf0fb]">{item}</button>)}</div>}
-            </div>
-            <a href="/login" className="inline-flex items-center justify-center rounded-full bg-[#bf2b91] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_7px_18px_rgba(183,40,135,0.22)] transition hover:-translate-y-0.5 hover:bg-[#a8227e]">Login</a>
-          </nav>
-        </div>
-      </header>
+      <SiteHeader />
 
       <section id="top" className="relative px-5 pb-12 pt-20 sm:px-8 sm:pt-28 lg:px-10 lg:pt-32">
         <div className="pointer-events-none absolute left-1/2 top-0 -z-0 h-[440px] w-[760px] -translate-x-1/2 rounded-full bg-[#f7e8f7] opacity-70 blur-3xl" />
@@ -119,7 +89,7 @@ export default function Page() {
 
       <section id="pricing" className="px-5 py-20 sm:px-8 lg:px-10 lg:py-32"><div className="mx-auto max-w-6xl"><div className="mx-auto mb-12 max-w-xl text-center"><p className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-[#b52c89]">Simple plans</p><h2 className="text-3xl font-semibold tracking-[-0.045em] sm:text-5xl">Choose your pace.</h2><p className="mt-4 text-sm leading-6 text-[#797483]">Start for free, then unlock more room to think when you&apos;re ready.</p></div><div className="grid gap-4 lg:grid-cols-3">{plans.map((plan) => <article key={plan.name} className={`relative rounded-3xl border p-7 ${plan.featured ? 'border-[#c33a98] bg-[#fffafd] shadow-[0_18px_50px_rgba(181,44,137,0.15)] lg:-translate-y-3' : 'border-[#e3dfe8] bg-white shadow-sm'}`}>{plan.featured && <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-[#ba2b8a] px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-white">Most popular</div>}<h3 className="text-lg font-semibold">{plan.name}</h3><p className="mt-1 text-sm text-[#8b8694]">{plan.detail}</p><div className="mt-7 flex items-baseline gap-1"><span className="text-4xl font-semibold tracking-[-0.06em]">{plan.price}</span>{plan.price !== '$0' && <span className="text-sm text-[#8b8694]">/month</span>}</div><button className={`mt-7 w-full rounded-full py-3 text-sm font-semibold transition hover:-translate-y-0.5 ${plan.featured ? 'bg-[#ba2b8a] text-white shadow-lg shadow-[#ba2b8a]/20 hover:bg-[#a7247e]' : 'border border-[#ddd8e5] bg-white text-[#554f61] hover:border-[#ba2b8a] hover:text-[#a7247e]'}`}>{plan.featured ? 'Upgrade now' : plan.name === 'Free' ? 'Current plan' : 'Coming soon'}</button><ul className="mt-7 space-y-3 border-t border-[#eeeaf0] pt-6">{plan.features.map((item) => <li key={item} className="flex items-center gap-2 text-sm text-[#676171]"><Check size={15} className="text-[#b52c89]" /> {item}</li>)}</ul></article>)}</div></div></section>
 
-      <footer className="border-t border-[#ebe7ef] bg-white px-5 py-8 sm:px-8 lg:px-10"><div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-center sm:flex-row sm:text-left"><p className="text-xs text-[#9993a1]">A calmer way to learn STEM.</p></div></footer>
+      <SiteFooter />
     </main>
   )
 }
