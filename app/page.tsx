@@ -108,7 +108,7 @@ export default function Page() {
       <section id="workspace" className="px-5 pb-24 sm:px-8 lg:px-10 lg:pb-32">
         <div className="mx-auto max-w-6xl rounded-[22px] border border-[#e2dfe8] bg-white p-2 shadow-[0_28px_70px_rgba(48,38,61,0.13)] sm:p-3">
           <div className="flex h-9 items-center gap-1.5 rounded-t-[14px] border-b border-[#efedf2] bg-[#faf9fc] px-4"><span className="size-2.5 rounded-full bg-[#f2a0a5]" /><span className="size-2.5 rounded-full bg-[#f2ce8d]" /><span className="size-2.5 rounded-full bg-[#9ed8ae]" /><div className="mx-auto h-5 w-2/5 rounded-md bg-white shadow-inner sm:w-1/3" /></div>
-          <div className="relative aspect-video overflow-hidden rounded-b-[14px] bg-[#f8f8fa]"><img src="/desk_preview.png" alt="DelvIn interactive STEM workspace" className="absolute inset-0 size-full object-cover" /></div>
+          <div className="rounded-b-[14px] bg-[#f8f8fa]"><img src="/Desk.png" alt="DelvIn interactive STEM workspace" className="block h-auto w-full rounded-b-[14px] object-contain" /></div>
         </div>
       </section>
 
