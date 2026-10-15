@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { AlertCircle, ArrowLeft, BookMarked, FunctionSquare, LineChart, NotebookPen, Sparkles, Trash2, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -19,7 +19,9 @@ import { rememberLastThread } from "@/components/workspace/session-context"
 import { DynamicDeskWidget } from "@/components/workspace/dynamic-desk-widget"
 import { MathMarkdown } from "@/components/workspace/math-markdown"
 import { mathRehypePlugins, mathRemarkPlugins } from "@/lib/markdown-math"
+import { useAuth } from "@/components/workspace/auth-context"
 import { useLanguage } from "@/components/workspace/language-context"
+import { redirectGuestToLogin } from "@/lib/auth-gate"
 import { localeToBcp47 } from "@/lib/i18n"
 import { QuestionPreviewModal } from "@/components/collections/question-preview-modal"
 
@@ -49,6 +51,7 @@ function formatDate(ts: number, locale: string) {
  * into two tabs. Reads the initial tab from `?tab=formulas|graphs`. */
 export function CollectionsPage() {
   const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
   const rawTab = searchParams.get("tab")
   const initialTab: TabId = rawTab === "bookmarks" ? "bookmarks" : "formulas"
@@ -62,6 +65,15 @@ export function CollectionsPage() {
   } = useMemoryBox()
   const { locale, t } = useLanguage()
   const dateLocale = localeToBcp47(locale)
+
+  useEffect(() => {
+    if (authLoading || user) return
+    redirectGuestToLogin((href) => router.replace(href))
+  }, [authLoading, user, router])
+
+  if (authLoading || !user) {
+    return <div className="min-h-dvh bg-background" />
+  }
 
   return (
     <div className="scroll-slim min-h-dvh overflow-y-auto bg-background text-foreground">

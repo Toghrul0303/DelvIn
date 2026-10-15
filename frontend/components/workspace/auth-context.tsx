@@ -12,6 +12,7 @@ import {
 } from "react"
 import type { Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
+import { safeNextPath } from "@/lib/safe-next"
 import {
   flushPendingWithin,
   readOwner,
@@ -27,6 +28,9 @@ type AuthContextValue = {
   session: Session | null
   signIn: (email: string, password: string) => Promise<string | null>
   signUp: (email: string, password: string) => Promise<string | null>
+  signInWithGoogle: (nextPath?: string) => Promise<string | null>
+  requestPasswordReset: (email: string) => Promise<string | null>
+  updatePassword: (password: string) => Promise<string | null>
   signOut: () => Promise<string | null>
 }
 
@@ -37,6 +41,9 @@ const AuthContext = createContext<AuthContextValue>({
   session: null,
   signIn: async () => null,
   signUp: async () => null,
+  signInWithGoogle: async () => null,
+  requestPasswordReset: async () => null,
+  updatePassword: async () => null,
   signOut: async () => null,
 })
 
@@ -116,6 +123,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return error?.message ?? null
   }, [])
 
+  const signInWithGoogle = useCallback(async (nextPath?: string) => {
+    const supabase = createClient()
+    if (!supabase) return "Supabase is not configured."
+    const next = safeNextPath(nextPath)
+    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    })
+    return error?.message ?? null
+  }, [])
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    const supabase = createClient()
+    if (!supabase) return "Supabase is not configured."
+    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/update-password")}`
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+    return error?.message ?? null
+  }, [])
+
+  const updatePassword = useCallback(async (password: string) => {
+    const supabase = createClient()
+    if (!supabase) return "Supabase is not configured."
+    const { error } = await supabase.auth.updateUser({ password })
+    return error?.message ?? null
+  }, [])
+
   const signOut = useCallback(async () => {
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
@@ -154,9 +188,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       signIn,
       signUp,
+      signInWithGoogle,
+      requestPasswordReset,
+      updatePassword,
       signOut,
     }),
-    [configured, loading, session, signIn, signUp, signOut],
+    [
+      configured,
+      loading,
+      session,
+      signIn,
+      signUp,
+      signInWithGoogle,
+      requestPasswordReset,
+      updatePassword,
+      signOut,
+    ],
   )
 
   return (

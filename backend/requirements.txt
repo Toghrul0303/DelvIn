@@ -13,6 +13,7 @@ langchain-community
 langchain-text-splitters
 langchain-chroma
 pymupdf
+pypdf
 fastembed
 tavily-python
 docling
