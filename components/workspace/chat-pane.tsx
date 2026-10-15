@@ -1685,6 +1685,7 @@ export function ChatPane({
     clearMathSelectionPaint()
     setExplainTip(null)
     setHighlightAsk(null)
+    if (!formulaId) return
     void nameSavedFormula({
       formulaId,
       formula: formulaTex,
@@ -1699,12 +1700,11 @@ export function ChatPane({
     if (saved[message.id]) return
 
     if (message.save === "formula") {
-      saveFormula(message.formula ?? message.content, message.content)
+      const formulaId = saveFormula(message.formula ?? message.content, message.content)
+      if (!formulaId) return
     } else if (message.save === "graph") {
       const latestChart = [...deskItems].reverse().find((item) => item.type === "chart")
-      if (latestChart) {
-        saveGraph(latestChart, message.content)
-      }
+      if (!latestChart || !saveGraph(latestChart, message.content)) return
     }
     setSaved((s) => ({ ...s, [message.id]: true }))
   }

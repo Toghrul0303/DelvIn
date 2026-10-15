@@ -135,7 +135,7 @@ function DeskCardBody({ shape }: { shape: IDeskCardShape }) {
   const handleSave = (event: React.MouseEvent) => {
     event.stopPropagation()
     event.preventDefault()
-    saveBookmark(item)
+    if (!saveBookmark(item)) return
     patchDeskItem(item.id, { bookmarked: true })
   }
 

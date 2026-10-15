@@ -10,7 +10,9 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { useRouter } from "next/navigation"
 import type { ChartDeskUpdate, DeskItem } from "./desk-context"
+import { redirectGuestToLogin } from "@/lib/auth-gate"
 import { useLanguage } from "./language-context"
 import { useAuth } from "./auth-context"
 import {
@@ -124,8 +126,8 @@ type MemoryBoxContextValue = {
   savedBookmarks: SavedBookmark[]
   saveFormula: (formula: string, context?: string) => string
   renameFormula: (id: string, context: string) => void
-  saveGraph: (chart: ChartDeskUpdate, context?: string) => void
-  saveStruggle: (topic: string, excerpt: string, questionId?: string) => void
+  saveGraph: (chart: ChartDeskUpdate, context?: string) => boolean
+  saveStruggle: (topic: string, excerpt: string, questionId?: string) => boolean
   saveBookmark: (item: DeskItem) => boolean
   saveQuestionSnapshot: (snapshot: {
     questionId: string
@@ -148,8 +150,8 @@ const MemoryBoxContext = createContext<MemoryBoxContextValue>({
   savedBookmarks: [],
   saveFormula: () => "",
   renameFormula: () => {},
-  saveGraph: () => {},
-  saveStruggle: () => {},
+  saveGraph: () => false,
+  saveStruggle: () => false,
   saveBookmark: () => false,
   saveQuestionSnapshot: () => false,
   removeFormula: () => {},
@@ -161,10 +163,13 @@ const MemoryBoxContext = createContext<MemoryBoxContextValue>({
 
 export function MemoryBoxProvider({ children }: { children: ReactNode }) {
   const { t } = useLanguage()
-  const { user } = useAuth()
+  const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const userId = user?.id ?? null
   const userIdRef = useRef(userId)
+  const authLoadingRef = useRef(authLoading)
   userIdRef.current = userId
+  authLoadingRef.current = authLoading
   const formulasRef = useRef<SavedFormula[]>([])
   const [localReady, setLocalReady] = useState(false)
   const [savedFormulas, setSavedFormulas] = useState<SavedFormula[]>([])
@@ -217,8 +222,16 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     }, TOAST_DURATION_MS)
   }, [])
 
+  const denyGuest = useCallback(() => {
+    if (userIdRef.current) return false
+    if (authLoadingRef.current) return true
+    redirectGuestToLogin((href) => router.push(href))
+    return true
+  }, [router])
+
   const saveFormula = useCallback(
     (formula: string, context?: string) => {
+      if (denyGuest()) return ""
       const item: SavedFormula = { id: crypto.randomUUID(), formula, context, savedAt: Date.now() }
       setSavedFormulas((prev) => {
         const next = [item, ...prev]
@@ -231,10 +244,11 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       showToast(t("toast.savedMemory"))
       return item.id
     },
-    [showToast, t],
+    [denyGuest, showToast, t],
   )
 
   const renameFormula = useCallback((id: string, context: string) => {
+    if (denyGuest()) return
     const current = formulasRef.current.find((item) => item.id === id)
     if (!current) return
     const updated = { ...current, context }
@@ -246,10 +260,11 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     })
     const uid = userIdRef.current
     if (uid) void upsertFormula(uid, updated)
-  }, [])
+  }, [denyGuest])
 
   const saveGraph = useCallback(
     (chart: ChartDeskUpdate, context?: string) => {
+      if (denyGuest()) return false
       const item: SavedGraph = { id: crypto.randomUUID(), chart, context, savedAt: Date.now() }
       setSavedGraphs((prev) => {
         const next = [item, ...prev]
@@ -259,11 +274,13 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       const uid = userIdRef.current
       if (uid) void upsertGraph(uid, item)
       showToast(t("toast.savedMemory"))
+      return true
     },
-    [showToast, t],
+    [denyGuest, showToast, t],
   )
 
   const removeFormula = useCallback((id: string) => {
+    if (denyGuest()) return
     setSavedFormulas((prev) => {
       const next = prev.filter((f) => f.id !== id)
       saveToStorage(FORMULAS_KEY, next)
@@ -271,9 +288,10 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     })
     const uid = userIdRef.current
     if (uid) void deleteRemoteRow("memory_formulas", uid, id)
-  }, [])
+  }, [denyGuest])
 
   const removeGraph = useCallback((id: string) => {
+    if (denyGuest()) return
     setSavedGraphs((prev) => {
       const next = prev.filter((g) => g.id !== id)
       saveToStorage(GRAPHS_KEY, next)
@@ -281,10 +299,11 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     })
     const uid = userIdRef.current
     if (uid) void deleteRemoteRow("memory_graphs", uid, id)
-  }, [])
+  }, [denyGuest])
 
   const saveBookmark = useCallback(
     (item: DeskItem): boolean => {
+      if (denyGuest()) return false
       let added = false
       let created: SavedBookmark | null = null
       setSavedBookmarks((prev) => {
@@ -307,7 +326,7 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       showToast(added ? t("toast.savedBookmarks") : t("toast.alreadyBookmarks"))
       return added
     },
-    [showToast, t],
+    [denyGuest, showToast, t],
   )
 
   const saveQuestionSnapshot = useCallback(
@@ -317,6 +336,7 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       prompt: string
       cluster: QuestionClusterShape[]
     }): boolean => {
+      if (denyGuest()) return false
       let wrote = false
       let saved: QuestionBookmark | null = null
       setSavedBookmarks((prev) => {
@@ -359,10 +379,11 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       showToast(t("toast.savedQuestion"))
       return wrote
     },
-    [showToast, t],
+    [denyGuest, showToast, t],
   )
 
   const removeBookmark = useCallback((id: string) => {
+    if (denyGuest()) return
     setSavedBookmarks((prev) => {
       const next = prev.filter((bookmark) => bookmark.id !== id)
       saveToStorage(BOOKMARKS_KEY, next)
@@ -370,10 +391,11 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     })
     const uid = userIdRef.current
     if (uid) void deleteRemoteRow("memory_bookmarks", uid, id)
-  }, [])
+  }, [denyGuest])
 
   const saveStruggle = useCallback(
     (topic: string, excerpt: string, questionId?: string) => {
+      if (denyGuest()) return false
       const item: SavedStruggle = {
         id: crypto.randomUUID(),
         topic,
@@ -389,11 +411,13 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
       const uid = userIdRef.current
       if (uid) void upsertStruggle(uid, item)
       showToast(t("toast.savedReview"))
+      return true
     },
-    [showToast, t],
+    [denyGuest, showToast, t],
   )
 
   const removeStruggle = useCallback((id: string) => {
+    if (denyGuest()) return
     setSavedStruggles((prev) => {
       const next = prev.filter((s) => s.id !== id)
       saveToStorage(STRUGGLES_KEY, next)
@@ -401,7 +425,7 @@ export function MemoryBoxProvider({ children }: { children: ReactNode }) {
     })
     const uid = userIdRef.current
     if (uid) void deleteRemoteRow("memory_struggles", uid, id)
-  }, [])
+  }, [denyGuest])
 
   const value = useMemo(
     () => ({

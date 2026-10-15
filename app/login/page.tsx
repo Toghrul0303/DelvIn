@@ -1,13 +1,20 @@
 "use client"
 
+import { Suspense } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { LoginForm } from "@/components/workspace/auth-panel"
 import { useAuth } from "@/components/workspace/auth-context"
 import { useLanguage } from "@/components/workspace/language-context"
+import { safeNextPath } from "@/lib/safe-next"
 
-export default function LoginPage() {
+function LoginScreen() {
   const { user, loading, signOut } = useAuth()
   const { t } = useLanguage()
+  const searchParams = useSearchParams()
+  const nextPath = safeNextPath(searchParams.get("next"))
+  const reason = searchParams.get("reason")
+  const authError = searchParams.get("error")
 
   return (
     <main className="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
@@ -19,13 +26,20 @@ export default function LoginPage() {
               {t("sidebar.signedInAs", { email: user.email ?? "" })}
             </p>
           ) : (
-            <p className="mt-1 text-sm text-muted-foreground">{t("sidebar.authSubtitle")}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {reason === "feature" ? t("sidebar.featureLogin") : t("sidebar.authSubtitle")}
+            </p>
           )}
         </div>
+        {authError === "callback" ? (
+          <p className="w-full max-w-sm text-xs leading-snug text-destructive">
+            {t("sidebar.authCallbackError")}
+          </p>
+        ) : null}
         {loading ? null : user ? (
           <div className="flex w-full max-w-sm flex-col gap-2">
             <Link
-              href="/workspace"
+              href={nextPath}
               className="bg-brand-gradient grid h-10 place-items-center rounded-xl text-sm font-semibold text-white"
             >
               {t("sidebar.goToWorkspace")}
@@ -39,9 +53,17 @@ export default function LoginPage() {
             </button>
           </div>
         ) : (
-          <LoginForm />
+          <LoginForm nextPath={nextPath} />
         )}
       </div>
     </main>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="grid min-h-dvh place-items-center bg-background" />}>
+      <LoginScreen />
+    </Suspense>
   )
 }

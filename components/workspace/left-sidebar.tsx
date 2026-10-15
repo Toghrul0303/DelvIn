@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   ChevronDown,
@@ -15,7 +15,9 @@ import { MEMORY_FOLDERS, type Chapter } from "./data"
 import { STATUS_STYLES, nextQuestionStatus, useTaskTracker } from "./task-tracker-context"
 import { useSession } from "./session-context"
 import { useMemoryBox } from "./memory-box-context"
+import { useAuth } from "./auth-context"
 import { useLanguage } from "./language-context"
+import { redirectGuestToLogin } from "@/lib/auth-gate"
 
 /** Folders that route to a dedicated tab on the `/collections` page. */
 const FOLDER_ROUTES: Record<string, string> = {
@@ -39,10 +41,20 @@ export function LeftSidebar({
     savedBookmarks,
   } = useMemoryBox()
   const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const { t } = useLanguage()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftTitle, setDraftTitle] = useState("")
   const skipCommit = useRef(false)
+  const pendingRoute = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (authLoading || !pendingRoute.current) return
+    const route = pendingRoute.current
+    pendingRoute.current = null
+    if (!user) redirectGuestToLogin((href) => router.push(href))
+    else router.push(route)
+  }, [authLoading, user, router])
 
   function beginRename(id: string, title: string) {
     skipCommit.current = false
@@ -67,6 +79,18 @@ export function LeftSidebar({
   function cancelRename() {
     skipCommit.current = true
     setEditingId(null)
+  }
+
+  const openMemoryFolder = (route: string) => {
+    if (authLoading) {
+      pendingRoute.current = route
+      return
+    }
+    if (!user) {
+      redirectGuestToLogin((href) => router.push(href))
+      return
+    }
+    router.push(route)
   }
 
   const folderCount = (folderId: string, fallback: number) => {
@@ -119,7 +143,7 @@ export function LeftSidebar({
       </div>
 
       {collapsed ? (
-        <CollapsedRail />
+        <CollapsedRail onOpen={openMemoryFolder} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-4 px-3 pb-4">
           <Section title={t("sidebar.mySessions")} className="shrink-0">
@@ -223,7 +247,7 @@ export function LeftSidebar({
                   <button
                     key={folder.id}
                     type="button"
-                    onClick={route ? () => router.push(route) : undefined}
+                    onClick={route ? () => openMemoryFolder(route) : undefined}
                     disabled={!route}
                     title={comingSoon ? t("collections.comingSoon") : undefined}
                     className={cn(
@@ -422,9 +446,8 @@ function Section({
   )
 }
 
-function CollapsedRail() {
+function CollapsedRail({ onOpen }: { onOpen: (route: string) => void }) {
   const { t } = useLanguage()
-  const router = useRouter()
   return (
     <div className="flex flex-1 flex-col items-center gap-4 py-4">
       {MEMORY_FOLDERS.map((f) => {
@@ -436,7 +459,7 @@ function CollapsedRail() {
             key={f.id}
             type="button"
             disabled={!route}
-            onClick={route ? () => router.push(route) : undefined}
+            onClick={route ? () => onOpen(route) : undefined}
             title={comingSoon ? t("collections.comingSoon") : t(`folders.${f.id}`)}
             aria-label={
               comingSoon
