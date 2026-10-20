@@ -27,7 +27,7 @@ export default function TermsPage() {
       </LegalSection>
       <LegalSection title="Subscriptions and billing">
         <p>
-          Free is available at no charge, with the limits shown on the homepage. Pro and Premium are paid subscriptions. Paid plans are billed by Lemon Squeezy, which acts as the Merchant of Record. Refunds for an initial subscription follow the <Link href="/refund" className="text-[#a82e83]">Refund Policy</Link>.
+          Free is available at no charge, with the limits shown on the homepage. Pro and Premium are paid subscriptions. Paid plans are billed by Polar, which acts as the Merchant of Record. Refunds for an initial subscription follow the <Link href="/refund" className="text-[#a82e83]">Refund Policy</Link>.
         </p>
       </LegalSection>
       <LegalSection title="Acceptable use">

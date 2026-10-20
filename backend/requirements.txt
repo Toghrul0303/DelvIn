@@ -20,3 +20,4 @@ docling
 rapidocr
 sympy
 sentry-sdk
+polar-sdk

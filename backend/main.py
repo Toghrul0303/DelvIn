@@ -25,6 +25,7 @@ from graph import (
 )
 from agents import DEEPSEEK_ROUTER_TIMEOUT_SECONDS, _deepseek_model
 from locknlearn_schemas import StruggleRecord
+from polar_webhook import router as polar_webhook_router
 from tools import (
     cancel_embed_warmup,
     cancel_all_embed_jobs,
@@ -103,6 +104,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(polar_webhook_router)
 
 
 @app.get("/health")
