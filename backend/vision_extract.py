@@ -473,10 +473,7 @@ async def vision_extract_pages(
     if not pages:
         return VisionExtract(found=False, stem="")
 
-    jpegs: list[bytes] = []
-    for page in pages:
-        jpeg = await asyncio.to_thread(render_page_jpeg, file_path, page, VISION_DPI)
-        jpegs.append(jpeg)
+    jpegs = await _render_pages_in_child(file_path, pages, VISION_DPI)
 
     prompt = (_PREV_PAGE_PROMPT if previous_page else _EXTRACT_PROMPT).format(
         marker=marker,
@@ -594,6 +591,72 @@ async def vision_extract_question(
     extract.diagrams = shifted + list(extract.diagrams or [])
     extract.figure_on_previous_page = True
     return _clamp_boxes(extract)
+
+
+async def _render_pages_in_child(file_path: str, pages: list[int], dpi: int) -> list[bytes]:
+    """One short-lived process renders the pages, then it is killed."""
+    from pdf_worker import collect_child_messages, render_jpeg_job
+
+    messages = await asyncio.to_thread(
+        collect_child_messages,
+        render_jpeg_job,
+        (file_path, list(pages), dpi),
+        20,
+        45,
+    )
+    by_page: dict[int, bytes] = {}
+    for msg in messages:
+        if msg.get("kind") == "error":
+            raise RuntimeError(msg.get("message") or "render failed")
+        if msg.get("kind") == "jpeg":
+            by_page[int(msg["page"])] = msg.get("data") or b""
+    return [by_page.get(page, b"") for page in pages]
+
+
+async def crop_diagrams_in_child(
+    file_path: str,
+    page_n: int,
+    diagrams: list,
+    page_count: Optional[int] = None,
+    dpi: int = VISION_DPI,
+) -> list[bytes]:
+    """Crop at most three boxes in a child process. Returns JPEG bytes."""
+    from pdf_worker import collect_child_messages, crop_jpeg_job
+
+    jobs = []
+    for box in (diagrams or [])[:3]:
+        if not isinstance(box, DiagramBox):
+            try:
+                box = DiagramBox.model_validate(box)
+            except Exception:
+                continue
+        abs_page = page_n + int(box.page_offset or 0)
+        if page_count and (abs_page < 1 or abs_page > page_count):
+            continue
+        jobs.append({
+            "abs_page": abs_page,
+            "x_min": box.x_min,
+            "y_min": box.y_min,
+            "x_max": box.x_max,
+            "y_max": box.y_max,
+        })
+    if not jobs:
+        return []
+    messages = await asyncio.to_thread(
+        collect_child_messages,
+        crop_jpeg_job,
+        (file_path, jobs, dpi),
+        20,
+        45,
+    )
+    by_index: dict[int, bytes] = {}
+    for msg in messages:
+        if msg.get("kind") == "error":
+            print(f"[VISION] crop child error: {msg.get('message')}", flush=True)
+            continue
+        if msg.get("kind") == "crop" and msg.get("data"):
+            by_index[int(msg["index"])] = msg["data"]
+    return [by_index[i] for i in range(len(jobs)) if by_index.get(i)]
 
 
 def crop_page_box(file_path: str, abs_page: int, box: DiagramBox, dpi: int = VISION_DPI) -> bytes:
@@ -736,10 +799,19 @@ def crop_image_diagrams_to_data_urls(file_path: str, diagrams: list) -> list[str
 
 
 async def ocr_pdf_page(file_path: str, abs_page: int) -> str:
-    def _run() -> str:
-        img = render_page_rgb(file_path, abs_page, FAST_OCR_DPI)
-        text = ocr_rgb_array(img)
-        print(f"[VISION] OCR page {abs_page} chars={len(text)}", flush=True)
-        return text
+    """One page of OCR in a child process. RapidOCR does not stay in the server."""
+    from pdf_worker import collect_child_messages, ocr_pages_job
 
-    return await asyncio.to_thread(_run)
+    messages = await asyncio.to_thread(
+        collect_child_messages,
+        ocr_pages_job,
+        (file_path, [abs_page], FAST_OCR_DPI),
+        20,
+        60,
+    )
+    for msg in messages:
+        if msg.get("kind") == "ocr" and int(msg.get("page") or 0) == abs_page:
+            text = str(msg.get("text") or "")
+            print(f"[VISION] OCR page {abs_page} chars={len(text)}", flush=True)
+            return text
+    return ""

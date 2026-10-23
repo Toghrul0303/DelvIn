@@ -30,7 +30,8 @@ from tools import (
     count_pdf_pages,
     EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES,
     reset_thread_document_if_new_file,
-    start_embed_warmup,
+    ensure_struggle_context,
+    get_indexed_file_path,
     PIPELINE_STATUS_MATH,
     PIPELINE_STATUS_RENDER,
     set_pipeline_status,
@@ -3577,10 +3578,14 @@ async def router_node(
 # =============================================================================
 async def chat_worker_node(
     state: AgentState,
+    config: RunnableConfig,
 ) -> Command[Literal["doc_worker_node", "math_worker_node", "web_worker_node", "composer_node"]]:
     # Chat Worker has no tools of its own (no `.bind_tools()` call) — an
     # empty `own_tool_names` set means ANY tool-call noise from an upstream
     # worker in a chain gets stripped from its window entirely.
+    struggle_update = await ensure_struggle_context(state, config)
+    if struggle_update:
+        state = {**state, **struggle_update}
     trimmed_history = build_worker_messages(state, own_tool_names=set())
 
     if trimmed_history:
@@ -3624,6 +3629,7 @@ async def chat_worker_node(
     reply_text = _extract_text(response.content)
     return Command(
         update={
+            **struggle_update,
             "messages": [response],
             "chat_reply": reply_text,
             "completed_workers": (state.get("completed_workers") or []) + ["chat_worker"],
@@ -3726,6 +3732,14 @@ async def doc_worker_node(
     if reset_thread_document_if_new_file(config, turn_path or None):
         print("[DOC WORKER] Cleared stale document index before tools (new File path).", flush=True)
 
+    indexing_new_pdf = bool(
+        turn_path.lower().endswith(".pdf") and get_indexed_file_path(config) != turn_path
+    )
+    struggle_update: dict = {}
+    if not indexing_new_pdf:
+        struggle_update = await ensure_struggle_context(state, config)
+        if struggle_update:
+            state = {**state, **struggle_update}
     trimmed_history = _drop_image_file_annotations(
         build_worker_messages(state, own_tool_names=set(DOC_TOOLS_MAP.keys()))
     )
@@ -3794,19 +3808,23 @@ async def doc_worker_node(
                 flush=True,
             )
             reply_text = _latest_doc_extraction(state) or _extract_text(response.content)
+            finish = _doc_worker_finish_update(
+                state, reply_text, extra={"messages": [response]}, config=config
+            )
+            finish.update(struggle_update)
             return Command(
-                update=_doc_worker_finish_update(
-                    state, reply_text, extra={"messages": [response]}, config=config
-                ),
+                update=finish,
                 goto=_next_worker_goto(state, "doc_worker"),
             )
-        return Command(update={"messages": [response]}, goto="doc_tools_node")
+        return Command(update={**struggle_update, "messages": [response]}, goto="doc_tools_node")
 
     reply_text = _extract_text(response.content)
+    finish = _doc_worker_finish_update(
+        state, reply_text, extra={"messages": [response]}, config=config
+    )
+    finish.update(struggle_update)
     return Command(
-        update=_doc_worker_finish_update(
-            state, reply_text, extra={"messages": [response]}, config=config
-        ),
+        update=finish,
         goto=_next_worker_goto(state, "doc_worker"),
     )
 
@@ -3839,16 +3857,6 @@ async def doc_tools_node(state: AgentState, config: RunnableConfig) -> Command[L
     tool_messages = await asyncio.gather(
         *(_invoke_doc_tool(tc) for tc in last_message.tool_calls)
     )
-
-    # Task Tracker turns: warm the vector index in the background so a later
-    # Tier 2 search finds it ready. Idempotent; a no-op for scans, short docs,
-    # and unsigned sessions. Never blocks this turn.
-    _turn_msg = state.get("turn_user_message")
-    _turn_text = (
-        _extract_text(getattr(_turn_msg, "content", "") or "") if _turn_msg is not None else ""
-    )
-    if _TASK_START_RE.search(_turn_text):
-        start_embed_warmup(_resolve_thread_key(config), config)
 
     update: dict = {"messages": list(tool_messages), "tool_round_trips": round_trips}
 
@@ -3933,6 +3941,9 @@ async def math_worker_node(
     state: AgentState,
     config: RunnableConfig,
 ) -> Command[Literal["math_tools_node", "doc_worker_node", "web_worker_node", "chat_worker_node", "composer_node"]]:
+    struggle_update = await ensure_struggle_context(state, config)
+    if struggle_update:
+        state = {**state, **struggle_update}
     set_pipeline_status(_resolve_thread_key(config), PIPELINE_STATUS_MATH)
     socratic = _is_socratic_mode(state)
     stem_checkpoint: dict = {}
@@ -3971,6 +3982,7 @@ async def math_worker_node(
         )
         return Command(
             update={
+                **struggle_update,
                 "chat_reply": state.get("chat_reply") or "",
                 "completed_workers": (state.get("completed_workers") or []) + ["math_worker"],
                 "worker_queue": _pop_worker_queue(state),
@@ -4537,7 +4549,11 @@ async def math_tools_node(state: AgentState, config: RunnableConfig) -> Command[
 # =============================================================================
 async def web_worker_node(
     state: AgentState,
+    config: RunnableConfig,
 ) -> Command[Literal["web_tools_node", "doc_worker_node", "math_worker_node", "chat_worker_node", "composer_node"]]:
+    struggle_update = await ensure_struggle_context(state, config)
+    if struggle_update:
+        state = {**state, **struggle_update}
     trimmed_history = build_worker_messages(state, own_tool_names=set(WEB_TOOLS_MAP.keys()))
     sys_msg = HumanMessage(content=f"[SYSTEM INSTRUCTION]:\n{WEB_WORKER_SYSTEM_PROMPT}")
     messages_to_pass = [sys_msg] + trimmed_history
@@ -4556,6 +4572,7 @@ async def web_worker_node(
             )
             return Command(
                 update={
+                    **struggle_update,
                     "messages": [response],
                     "chat_reply": _extract_text(response.content),
                     "completed_workers": (state.get("completed_workers") or []) + ["web_worker"],
@@ -4563,11 +4580,15 @@ async def web_worker_node(
                 },
                 goto=_next_worker_goto(state, "web_worker"),
             )
-        return Command(update={"messages": [response]}, goto="web_tools_node")
+        return Command(
+            update={**struggle_update, "messages": [response]},
+            goto="web_tools_node",
+        )
 
     reply_text = _extract_text(response.content)
     return Command(
         update={
+            **struggle_update,
             "messages": [response],
             "chat_reply": reply_text,
             "completed_workers": (state.get("completed_workers") or []) + ["web_worker"],

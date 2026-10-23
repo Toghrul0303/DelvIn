@@ -31,7 +31,7 @@ from tools import (
     cancel_all_embed_jobs,
     get_pipeline_status,
     index_struggle_memory,
-    recall_struggle_context,
+    load_embedding_model,
     remember_thread_auth,
 )
 from dotenv import find_dotenv, load_dotenv
@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     # exactly what a FastAPI lifespan guarantees — hence compiling here rather
     # than at plain module-import time in graph.py.
     async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
+        await asyncio.to_thread(load_embedding_model)
         app.state.agent_app = workflow.compile(checkpointer=checkpointer)
         try:
             yield
@@ -434,15 +435,18 @@ def _download_storage_object(object_key: str, access_token: str) -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            payload = response.read()
+            suffix = os.path.splitext(safe_key)[1] or ".pdf"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+                print(f"[DOC LOADER] Restored storage object {safe_key} to {temp_file.name}", flush=True)
+                return temp_file.name
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         print(f"[DOC LOADER] Storage restore failed: {exc}", flush=True)
         return ""
-    suffix = os.path.splitext(safe_key)[1] or ".pdf"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        temp_file.write(payload)
-        print(f"[DOC LOADER] Restored storage object {safe_key} to {temp_file.name}", flush=True)
-        return temp_file.name
 
 
 @app.post("/submit_stream")
@@ -476,10 +480,12 @@ async def chat_stream_endpoint(
             await document.seek(0)
             file_ext = os.path.splitext(document.filename)[1]
             is_image = file_ext.lower() in _IMAGE_UPLOAD_EXTS
-            content = await document.read()
-
             with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-                temp_file.write(content)
+                while True:
+                    chunk = await document.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
                 temp_path = temp_file.name
             if not is_image:
                 _keep_thread_upload(thread_id, temp_path)
@@ -525,16 +531,10 @@ async def chat_stream_endpoint(
         user_prompt = _build_mode_prefixed_prompt(user_prompt, mode)
         user_prompt = _with_ui_language(user_prompt, _normalize_ui_language(ui_language))
 
-        struggle_context = await asyncio.to_thread(
-            recall_struggle_context, thread_id, message
-        )
-        if struggle_context:
-            print(f"[STRUGGLE] recalled {len(struggle_context)} chars for thread={thread_id}", flush=True)
-
         remember_thread_auth(thread_id, user_id or "", access_token or "")
         inputs = {
             "messages": [HumanMessage(content=user_prompt)],
-            "struggle_context": struggle_context or "",
+            "struggle_context": "",
             "canvas_anchor_id": canvas_anchor_id or None,
             "canvas_branch_from_id": canvas_branch_from_id or None,
             "study_mode": (mode or DEFAULT_STUDY_MODE).strip().lower(),

@@ -11,3 +11,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Baked / local embedding cache (Nixpacks prefetch writes the same path)
+.cache/

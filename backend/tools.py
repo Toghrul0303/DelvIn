@@ -57,6 +57,31 @@ from langchain_chroma import Chroma
 _FASTEMBED_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
+def _prepare_embedding_cache() -> None:
+    """Point FastEmbed at the cache the Nixpacks build (or a local prefetch) filled."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", os.path.join(root, ".cache", "fastembed"))
+    os.environ.setdefault("HF_HOME", os.path.join(root, ".cache", "huggingface"))
+    os.makedirs(os.environ["FASTEMBED_CACHE_PATH"], exist_ok=True)
+    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+
+
+def load_embedding_model() -> None:
+    """Build the ONNX session once, before the server accepts traffic.
+
+    Lifespan calls this. Request handlers must not be the first embed: that
+    was the Hugging Face download overlapping a PDF parse.
+    """
+    _prepare_embedding_cache()
+    embeddings._loaded()
+    embeddings.embed_query("locknlearn")
+    print(
+        f"[EMBED] model ready name={_FASTEMBED_MODEL_NAME} "
+        f"cache={os.environ.get('FASTEMBED_CACHE_PATH')}",
+        flush=True,
+    )
+
+
 class _FastEmbedEmbeddings(Embeddings):
     """Minimal `langchain_core.embeddings.Embeddings` adapter around
     `fastembed.TextEmbedding`. Deliberately NOT
@@ -69,7 +94,11 @@ class _FastEmbedEmbeddings(Embeddings):
     def __init__(self, model_name: str = _FASTEMBED_MODEL_NAME):
         from fastembed import TextEmbedding
 
-        self._model = TextEmbedding(model_name=model_name)
+        _prepare_embedding_cache()
+        self._model = TextEmbedding(
+            model_name=model_name,
+            cache_dir=os.environ["FASTEMBED_CACHE_PATH"],
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [vector.tolist() for vector in self._model.embed(texts)]
@@ -180,18 +209,24 @@ def delete_document_chunks(thread_key: str) -> None:
     _pg_request("DELETE", path, token, prefer="return=minimal")
 
 
-def insert_document_chunks(thread_key: str, file_path: str, chunks: list[str], vectors: list[list[float]]) -> None:
+def insert_document_chunk_batch(
+    thread_key: str,
+    file_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+    start_index: int = 0,
+) -> None:
+    """Append one embedding batch. Does not delete earlier batches."""
     auth = _thread_auth.get(thread_key)
     if not auth:
         raise RuntimeError("Signed-in user is required to store document chunks")
     user_id, token = auth
-    delete_document_chunks(thread_key)
     rows = [
         {
             "user_id": user_id,
             "thread_id": thread_key,
             "file_path": file_path,
-            "chunk_index": index,
+            "chunk_index": start_index + index,
             "content": text,
             "embedding": vector,
         }
@@ -199,6 +234,142 @@ def insert_document_chunks(thread_key: str, file_path: str, chunks: list[str], v
     ]
     for start in range(0, len(rows), 40):
         _pg_request("POST", "document_chunks", token, rows[start:start + 40], prefer="return=minimal")
+
+
+def insert_document_chunks(thread_key: str, file_path: str, chunks: list[str], vectors: list[list[float]]) -> None:
+    delete_document_chunks(thread_key)
+    if chunks:
+        insert_document_chunk_batch(thread_key, file_path, chunks, vectors, start_index=0)
+
+
+def _thread_user(thread_key: str) -> tuple[str, str]:
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        raise RuntimeError("Signed-in user is required to store document pages")
+    return auth
+
+
+def delete_document_pages(thread_key: str) -> None:
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        return
+    user_id, token = auth
+    path = (
+        "document_pages"
+        f"?user_id=eq.{_quote_filter(user_id)}"
+        f"&thread_id=eq.{_quote_filter(thread_key)}"
+    )
+    _pg_request("DELETE", path, token, prefer="return=minimal")
+
+
+def delete_document_index(thread_key: str) -> None:
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        return
+    user_id, token = auth
+    path = (
+        "document_indexes"
+        f"?user_id=eq.{_quote_filter(user_id)}"
+        f"&thread_id=eq.{_quote_filter(thread_key)}"
+    )
+    _pg_request("DELETE", path, token, prefer="return=minimal")
+
+
+def delete_remote_document(thread_key: str) -> None:
+    """Drop chunks, page text, and the completion row for this thread."""
+    with _vector_write_lock(thread_key):
+        delete_document_chunks(thread_key)
+        delete_document_pages(thread_key)
+        delete_document_index(thread_key)
+
+
+def insert_document_pages(thread_key: str, file_path: str, pages: list[dict]) -> None:
+    if not pages:
+        return
+    user_id, token = _thread_user(thread_key)
+    rows = [
+        {
+            "user_id": user_id,
+            "thread_id": thread_key,
+            "file_path": file_path,
+            "page_index": int(page["page_index"]),
+            "content": page.get("content") or "",
+            "printed_label": page.get("printed_label") or "",
+        }
+        for page in pages
+    ]
+    for start in range(0, len(rows), 20):
+        _pg_request("POST", "document_pages", token, rows[start:start + 20], prefer="return=minimal")
+
+
+def fetch_document_index(thread_key: str) -> Optional[dict]:
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        return None
+    user_id, token = auth
+    path = (
+        "document_indexes"
+        f"?user_id=eq.{_quote_filter(user_id)}"
+        f"&thread_id=eq.{_quote_filter(thread_key)}"
+        "&select=*"
+        "&limit=1"
+    )
+    raw = _pg_request("GET", path, token)
+    rows = json.loads(raw.decode("utf-8") or "[]")
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return None
+
+
+def fetch_document_pages(thread_key: str, start_page: int, end_page: int) -> dict[int, str]:
+    """1-indexed inclusive range. Missing pages are simply absent from the dict."""
+    auth = _thread_auth.get(thread_key)
+    if not auth or end_page < start_page:
+        return {}
+    user_id, token = auth
+    path = (
+        "document_pages"
+        f"?user_id=eq.{_quote_filter(user_id)}"
+        f"&thread_id=eq.{_quote_filter(thread_key)}"
+        f"&page_index=gte.{int(start_page)}"
+        f"&page_index=lte.{int(end_page)}"
+        "&select=page_index,content"
+        "&order=page_index.asc"
+    )
+    raw = _pg_request("GET", path, token)
+    rows = json.loads(raw.decode("utf-8") or "[]")
+    found: dict[int, str] = {}
+    if not isinstance(rows, list):
+        return found
+    for row in rows:
+        try:
+            found[int(row.get("page_index"))] = str(row.get("content") or "")
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def upsert_document_index(thread_key: str, row: dict) -> None:
+    user_id, token = _thread_user(thread_key)
+    payload = {
+        "user_id": user_id,
+        "thread_id": thread_key,
+        "file_path": row.get("file_path") or "",
+        "page_count": int(row.get("page_count") or 0),
+        "outline": row.get("outline") or [],
+        "label_map": row.get("label_map") or {},
+        "label_reverse": row.get("label_reverse") or {},
+        "printed_offset": row.get("printed_offset"),
+        "scan": bool(row.get("scan")),
+        "embed_complete": bool(row.get("embed_complete")),
+    }
+    _pg_request(
+        "POST",
+        "document_indexes?on_conflict=user_id,thread_id",
+        token,
+        payload,
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
 
 
 def search_document_chunks(thread_key: str, query: str, limit: int = 5) -> list[str]:
@@ -285,6 +456,9 @@ _DEFAULT_THREAD_KEY = "default_session"
 # for the SAME file is pure wasted latency, not a correctness fix. Checked
 # at the top of `process_and_index_documents` below.
 _indexed_file_paths: dict[str, str] = {}
+# Set when this process already had a document and a new file replaced it.
+# A cold start must not reuse the stored index in that case.
+_force_reindex: dict[str, bool] = {}
 # Absolute page count even when `_page_texts` is empty (scanned PDFs).
 _pdf_page_counts: dict[str, int] = {}
 # True when the PDF has no usable text layer — TOC + lazy OCR/vision only.
@@ -318,6 +492,9 @@ _vision_extracts: dict[str, dict] = {}
 # Flash inside `locate_marker_in_range`. Office files stay on Tier 2.
 # ---------------------------------------------------------------------------
 _page_texts: dict[str, list[str]] = {}
+# Recently read pages only. The book itself lives in document_pages.
+_page_lru: dict[str, "dict"] = {}
+_PAGE_LRU_MAX = 12
 _document_outlines: dict[str, list[dict]] = {}
 # Last successful `resolve_chapter_target` for this thread (absolute pages).
 # `locate_marker_in_range` uses this to decide whether a bare "10." heading
@@ -1400,11 +1577,10 @@ def clear_thread_document_cache(thread_key: str) -> None:
     _printed_page_offsets.pop(thread_key, None)
     _indexed_chunks.pop(thread_key, None)
     _embeddings_ready.pop(thread_key, None)
-    # Order matters: invalidate any in-flight writer first, then stop it, then
-    # delete under the write lock so a stale insert can never land afterwards.
+    _page_lru.pop(thread_key, None)
+    # Remote rows are deleted by the indexer (off the event loop), not here.
     _doc_generation[thread_key] = _doc_generation.get(thread_key, 0) + 1
     _cancel_embed_job(thread_key)
-    _dispose_thread_vector_store(thread_key)
     print(f"[DOC LOADER] Cleared thread document cache for thread={thread_key}", flush=True)
 
 
@@ -1437,6 +1613,7 @@ def reset_thread_document_if_new_file(config: RunnableConfig, file_path: Optiona
         flush=True,
     )
     clear_thread_document_cache(thread_key)
+    _force_reindex[thread_key] = True
     return previous is not None
 
 
@@ -1515,6 +1692,427 @@ def _index_ready_message(
     return prefix + extra
 
 
+_PDF_PAGE_STALL_SECONDS = 15
+# Covers page streaming plus the capped embed. A hung page still dies at the stall.
+_PDF_EXTRACT_BUDGET_SECONDS = 600
+_PAGE_INSERT_BATCH = 20
+
+
+def _remember_pages(thread_key: str, pages: dict[int, str]) -> None:
+    lru = _page_lru.setdefault(thread_key, {})
+    for index, text in pages.items():
+        lru.pop(int(index), None)
+        lru[int(index)] = text
+    while len(lru) > _PAGE_LRU_MAX:
+        lru.pop(next(iter(lru)))
+
+
+async def load_page_span(thread_key: str, start: int, end: int) -> list[str]:
+    """Pages for one tool call. Hits a small cache, then document_pages."""
+    if end < start:
+        return []
+    lru = _page_lru.setdefault(thread_key, {})
+    found: dict[int, str] = {}
+    missing: list[int] = []
+    for index in range(start, end + 1):
+        if index in lru:
+            text = lru.pop(index)
+            lru[index] = text
+            found[index] = text
+        else:
+            missing.append(index)
+    if missing:
+        try:
+            fetched = await asyncio.to_thread(
+                fetch_document_pages, thread_key, missing[0], missing[-1],
+            )
+        except Exception as exc:
+            print(f"[DOC LOADER] page fetch failed: {exc}", flush=True)
+            fetched = {}
+        if fetched:
+            _remember_pages(thread_key, fetched)
+            found.update(fetched)
+    return [found.get(index, "") for index in range(start, end + 1)]
+
+
+def _outline_entries_from_toc(raw_toc, page_count: int) -> list[dict]:
+    entries: list[dict] = []
+    for item in raw_toc or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        try:
+            level_i = int(item[0])
+            page_i = int(item[2])
+        except (TypeError, ValueError):
+            continue
+        cleaned = str(item[1] or "").strip()
+        if not cleaned or not (1 <= page_i <= page_count):
+            continue
+        if level_i < 1 or level_i > MAX_OUTLINE_LEVEL:
+            continue
+        entries.append({"title": cleaned, "page_start": page_i, "level": level_i})
+    return entries
+
+
+def _inject_heading_hits(entries: list[dict], hits: list[dict], total_pages: int) -> list[dict]:
+    extras: list[dict] = []
+    for i, entry in enumerate(entries):
+        if _chapter_number_from_title(entry.get("title") or "") is None:
+            continue
+        descendants = _descendant_indices(entries, i)
+        if any(_section_kind_of_title(entries[j].get("title") or "") for j in descendants):
+            continue
+        seen: set[str] = set()
+        start = int(entry["page_start"])
+        end = int(entry.get("page_end") or start)
+        child_level = int(entry.get("level") or 1) + 1
+        for hit in hits:
+            page = int(hit["page_start"])
+            if not (start <= page <= end):
+                continue
+            kind = str(hit["kind"])
+            if kind in seen:
+                continue
+            seen.add(kind)
+            extras.append({
+                "title": hit["title"],
+                "page_start": page,
+                "level": child_level,
+            })
+    if not extras:
+        return entries
+    merged = entries + extras
+    merged.sort(key=lambda e: (e["page_start"], int(e.get("level") or 1)))
+    return merged
+
+
+class _LiveOutline:
+    """TOC plus a one-page-at-a-time heading scan. Never keeps the book."""
+
+    def __init__(self, raw_toc, page_count: int):
+        self.page_count = page_count
+        self.native = _outline_entries_from_toc(raw_toc, page_count)
+        self.regex_entries: list[dict] = []
+        self.seen_numbers: set[str] = set()
+        self.seen_kinds: set[str] = set()
+        self.heading_hits: list[dict] = []
+
+    def add_page(self, page_number: int, text: str) -> None:
+        if not text:
+            return
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if self.native:
+                if len(stripped) > 80:
+                    continue
+                kind = _match_subsection_line(stripped)
+                if kind:
+                    self.heading_hits.append({
+                        "kind": kind,
+                        "title": _outline_bank_title(kind, stripped),
+                        "page_start": page_number,
+                    })
+                continue
+            if len(stripped) > 120:
+                continue
+            match = _CHAPTER_PATTERN.search(stripped)
+            if match and match.start() <= 3:
+                number = match.group("num1") or match.group("num2")
+                if number not in self.seen_numbers:
+                    self.seen_numbers.add(number)
+                    self.seen_kinds = set()
+                    self.regex_entries.append({
+                        "title": stripped, "page_start": page_number, "level": 1,
+                    })
+                continue
+            kind = _match_subsection_line(stripped)
+            if kind and kind not in self.seen_kinds and self.regex_entries:
+                self.seen_kinds.add(kind)
+                self.regex_entries.append({
+                    "title": _outline_bank_title(kind, stripped),
+                    "page_start": page_number,
+                    "level": 2,
+                })
+
+    def finish(self) -> list[dict]:
+        total = self.page_count
+        if not total:
+            return []
+        if self.native:
+            entries = list(self.native)
+            _assign_sibling_page_ends(entries, total)
+            _assign_parent_indices(entries)
+            entries = _inject_heading_hits(entries, self.heading_hits, total)
+            _assign_sibling_page_ends(entries, total)
+            _assign_parent_indices(entries)
+        else:
+            entries = list(self.regex_entries)
+            _assign_sibling_page_ends(entries, total)
+            _assign_parent_indices(entries)
+        print(
+            f"[DOC OUTLINE] {len(entries)} nodes "
+            f"(native={len(self.native)}, pages={total})",
+            flush=True,
+        )
+        return entries
+
+
+def _hydrate_document_index(thread_key: str, row: dict, local_path: str) -> None:
+    _pdf_page_counts[thread_key] = int(row.get("page_count") or 0)
+    _scan_mode[thread_key] = bool(row.get("scan"))
+    outline = row.get("outline") or []
+    _document_outlines[thread_key] = outline if isinstance(outline, list) else []
+    absolute: dict[int, str] = {}
+    label_map = row.get("label_map") or {}
+    if isinstance(label_map, dict):
+        for key, value in label_map.items():
+            try:
+                absolute[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
+    _page_label_maps[thread_key] = absolute
+    reverse: dict[str, int] = {}
+    reverse_raw = row.get("label_reverse") or {}
+    if isinstance(reverse_raw, dict):
+        for key, value in reverse_raw.items():
+            try:
+                reverse[str(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+    _page_label_reverse[thread_key] = reverse
+    offset = row.get("printed_offset")
+    _printed_page_offsets[thread_key] = int(offset) if isinstance(offset, int) else None
+    _indexed_file_paths[thread_key] = local_path
+    _embeddings_ready[thread_key] = bool(row.get("embed_complete")) and not bool(row.get("scan"))
+    _indexed_chunks[thread_key] = []
+    _page_texts[thread_key] = []
+
+
+def _storage_key(config: RunnableConfig, file_path: str) -> str:
+    configured = str((config.get("configurable") or {}).get("document_path") or "").strip()
+    return configured or file_path
+
+
+async def _embed_chunk_batch(
+    thread_key: str,
+    stored_path: str,
+    chunks: list[str],
+    start_index: int,
+) -> int:
+    if not chunks:
+        return start_index
+    vectors = await asyncio.to_thread(embeddings.embed_documents, chunks)
+    await asyncio.to_thread(
+        insert_document_chunk_batch,
+        thread_key, stored_path, chunks, vectors, start_index,
+    )
+    written = start_index + len(chunks)
+    del vectors
+    return written
+
+
+async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, target) -> dict:
+    """Read the child page by page. Embed and insert, then drop the page."""
+    import gc
+    import multiprocessing
+    from queue import Empty
+
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue(maxsize=2)
+    proc = ctx.Process(target=target, args=(file_path, queue), daemon=False)
+    proc.start()
+    deadline = time.time() + _PDF_EXTRACT_BUDGET_SECONDS
+    outline: Optional[_LiveOutline] = None
+    page_count = 0
+    has_text = False
+    labels: dict[int, str] = {}
+    offset_sample: list[str] = []
+    page_batch: list[dict] = []
+    buffer = ""
+    embedded = 0
+    was_truncated = False
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
+
+    async def _stop_child() -> None:
+        if proc.is_alive():
+            proc.kill()
+        await asyncio.to_thread(proc.join, 5)
+
+    try:
+        while True:
+            if time.time() > deadline:
+                await _stop_child()
+                raise TimeoutError("pdf extract budget")
+            try:
+                msg = await asyncio.to_thread(queue.get, True, _PDF_PAGE_STALL_SECONDS)
+            except Empty as exc:
+                await _stop_child()
+                raise TimeoutError("pdf extract stalled") from exc
+            kind = msg.get("kind")
+            if kind == "error":
+                await _stop_child()
+                raise RuntimeError(msg.get("message") or "pdf extract failed")
+            if kind == "meta":
+                page_count = int(msg.get("page_count") or 0)
+                has_text = bool(msg.get("has_text"))
+                outline = _LiveOutline(msg.get("toc") or [], page_count)
+                continue
+            if kind == "page":
+                text = _normalize_math_notation(msg.get("text") or "")
+                label = str(msg.get("label") or "")
+                page_index = int(msg["page_index"])
+                if label:
+                    labels[page_index] = label
+                if outline is not None:
+                    outline.add_page(page_index, text)
+                if len(offset_sample) < 40:
+                    offset_sample.append(text)
+                page_batch.append({
+                    "page_index": page_index,
+                    "content": text,
+                    "printed_label": label,
+                })
+                if len(page_batch) >= _PAGE_INSERT_BATCH:
+                    await asyncio.to_thread(
+                        insert_document_pages, thread_key, stored_path, page_batch,
+                    )
+                    page_batch.clear()
+                    gc.collect()
+                if has_text and embedded < MAX_INDEXED_CHUNKS and text.strip():
+                    buffer = f"{buffer}\n\n{text}" if buffer else text
+                    while embedded < MAX_INDEXED_CHUNKS:
+                        pieces = splitter.split_text(buffer)
+                        if len(pieces) <= EMBED_BATCH_SIZE:
+                            break
+                        emit = pieces[:EMBED_BATCH_SIZE]
+                        buffer = "\n\n".join(pieces[EMBED_BATCH_SIZE:])
+                        room = MAX_INDEXED_CHUNKS - embedded
+                        if len(emit) > room:
+                            emit = emit[:room]
+                            was_truncated = True
+                        if emit:
+                            embedded = await _embed_chunk_batch(
+                                thread_key, stored_path, emit, embedded,
+                            )
+                            gc.collect()
+                        if embedded >= MAX_INDEXED_CHUNKS:
+                            was_truncated = True
+                            buffer = ""
+                            break
+                continue
+            if kind == "done":
+                break
+        if page_batch:
+            await asyncio.to_thread(
+                insert_document_pages, thread_key, stored_path, page_batch,
+            )
+            page_batch.clear()
+        if has_text and buffer.strip() and embedded < MAX_INDEXED_CHUNKS:
+            pieces = splitter.split_text(buffer)
+            while pieces and embedded < MAX_INDEXED_CHUNKS:
+                room = min(EMBED_BATCH_SIZE, MAX_INDEXED_CHUNKS - embedded)
+                emit = pieces[:room]
+                pieces = pieces[room:]
+                embedded = await _embed_chunk_batch(thread_key, stored_path, emit, embedded)
+            if pieces:
+                was_truncated = True
+        elif buffer.strip() and embedded >= MAX_INDEXED_CHUNKS:
+            was_truncated = True
+        buffer = ""
+        await _stop_child()
+        reverse: dict[str, int] = {}
+        for page_index, label in labels.items():
+            reverse.setdefault(label, page_index)
+        offset = None
+        if not reverse and offset_sample:
+            offset = _detect_printed_page_offset(offset_sample)
+        del offset_sample
+        gc.collect()
+        return {
+            "page_count": page_count,
+            "has_text": has_text,
+            "outline": outline.finish() if outline else [],
+            "labels": labels,
+            "reverse": reverse,
+            "offset": offset,
+            "embedded": embedded,
+            "was_truncated": was_truncated,
+        }
+    finally:
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        try:
+            queue.close()
+        except Exception:
+            pass
+
+
+async def _index_pdf_document(thread_key: str, file_path: str, stored_path: str) -> dict:
+    from pdf_worker import extract_pdf_to_queue, extract_pypdf_to_queue
+
+    try:
+        return await _consume_pdf_child(
+            thread_key, file_path, stored_path, extract_pdf_to_queue,
+        )
+    except TimeoutError:
+        raise
+    except RuntimeError as exc:
+        print(f"[DOC LOADER] PyMuPDF child failed ({exc}); trying pypdf after it exited", flush=True)
+        return await _consume_pdf_child(
+            thread_key, file_path, stored_path, extract_pypdf_to_queue,
+        )
+
+
+def _apply_pdf_result(thread_key: str, result: dict) -> None:
+    _pdf_page_counts[thread_key] = int(result["page_count"])
+    _scan_mode[thread_key] = not bool(result["has_text"])
+    _document_outlines[thread_key] = result["outline"]
+    _page_label_maps[thread_key] = result["labels"]
+    _page_label_reverse[thread_key] = result["reverse"]
+    _printed_page_offsets[thread_key] = result["offset"]
+    _indexed_chunks[thread_key] = []
+    _page_texts[thread_key] = []
+    _embeddings_ready[thread_key] = bool(result["has_text"]) and int(result["embedded"]) > 0
+
+
+async def _persist_index_row(thread_key: str, stored_path: str, *, embed_complete: bool) -> None:
+    await asyncio.to_thread(
+        upsert_document_index,
+        thread_key,
+        {
+            "file_path": stored_path,
+            "page_count": _pdf_page_counts.get(thread_key) or 0,
+            "outline": _document_outlines.get(thread_key) or [],
+            "label_map": {str(k): v for k, v in (_page_label_maps.get(thread_key) or {}).items()},
+            "label_reverse": _page_label_reverse.get(thread_key) or {},
+            "printed_offset": _printed_page_offsets.get(thread_key),
+            "scan": bool(_scan_mode.get(thread_key)),
+            "embed_complete": embed_complete,
+        },
+    )
+
+
+async def _embed_plain_text(thread_key: str, stored_path: str, context: str) -> tuple[int, bool]:
+    text = (context or "").strip()
+    if not text:
+        return 0, False
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
+    chunks = splitter.split_text(text)
+    was_truncated = len(chunks) > MAX_INDEXED_CHUNKS
+    if was_truncated:
+        chunks = chunks[:MAX_INDEXED_CHUNKS]
+    embedded = 0
+    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch = chunks[start:start + EMBED_BATCH_SIZE]
+        embedded = await _embed_chunk_batch(thread_key, stored_path, batch, embedded)
+        del batch
+    del chunks
+    return embedded, was_truncated
+
+
 @tool
 async def process_and_index_documents(file_path: str, config: RunnableConfig) -> str:
     """
@@ -1542,6 +2140,7 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
     # this thread was already fully indexed — skip the entire extract ->
     # chunk -> embed pipeline instead of redoing ~5s of work for nothing.
     if _indexed_file_paths.get(thread_key) == file_path:
+        _force_reindex.pop(thread_key, False)
         print(f"[TIMING] Tool Doc Indexing SKIPPED (already indexed): '{file_path}'", flush=True)
         return _index_ready_message(thread_key, skipped=True)
 
@@ -1562,87 +2161,77 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
             )
         return f"Xəta: Fayl tapılmadı və indeks toxunulmaz qaldı: {file_path}"
 
+    stored_path = _storage_key(config, file_path)
+    try:
+        remote = await asyncio.to_thread(fetch_document_index, thread_key)
+    except Exception as exc:
+        remote = None
+        print(f"[DOC LOADER] index lookup failed: {exc}", flush=True)
+    forced = _force_reindex.pop(thread_key, False)
+    if (
+        not forced
+        and remote
+        and remote.get("embed_complete")
+        and stored_path
+        and remote.get("file_path") == stored_path
+    ):
+        _hydrate_document_index(thread_key, remote, file_path)
+        print(f"[TIMING] Tool Doc Indexing SKIPPED (stored index): '{stored_path}'", flush=True)
+        return _index_ready_message(thread_key, skipped=True)
+
     print("[TIMING] Tool Doc Indexing Started...", flush=True)
     t0 = time.time()
     clear_thread_document_cache(thread_key)
+
+    async def _drop_partial() -> None:
+        try:
+            await asyncio.to_thread(delete_remote_document, thread_key)
+        except Exception as drop_exc:
+            print(f"[DOC LOADER] partial index cleanup failed: {drop_exc}", flush=True)
+
     try:
-        context, page_texts = await _load_document_text(file_path)
-
-        if context == CORRUPTED_DOCUMENT_MESSAGE:
-            return context
-
+        await asyncio.to_thread(delete_remote_document, thread_key)
         ext = os.path.splitext(file_path)[1].lower()
-        is_scan = ext == ".pdf" and page_texts is None and not context
-        page_count = len(page_texts) if page_texts else count_pdf_pages(file_path)
-        _pdf_page_counts[thread_key] = page_count
-        _scan_mode[thread_key] = is_scan
-
-        _dispose_thread_vector_store(thread_key)
-
-        is_short_doc = 0 < page_count <= SHORT_DOC_MAX_PAGES
-        chunks: list[str] = []
+        chunks = 0
         was_truncated = False
-        if is_scan or is_short_doc or not context.strip():
-            print(
-                f"[DOC LOADER] stage=embed SKIPPED "
-                f"(scan={is_scan}, short={is_short_doc}, pages={page_count})",
-                flush=True,
-            )
-            _indexed_chunks[thread_key] = []
-            _embeddings_ready[thread_key] = False
+        if ext == ".pdf":
+            result = await _index_pdf_document(thread_key, file_path, stored_path)
+            _apply_pdf_result(thread_key, result)
+            chunks = int(result["embedded"])
+            was_truncated = bool(result["was_truncated"])
         else:
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
-            chunks = text_splitter.split_text(context)
-            was_truncated = len(chunks) > MAX_INDEXED_CHUNKS
-            if was_truncated:
-                print(
-                    f"[DOC LOADER] '{file_path}' produced {len(chunks)} chunks; "
-                    f"capping at {MAX_INDEXED_CHUNKS} (see MAX_INDEXED_CHUNKS).",
-                    flush=True,
-                )
-                chunks = chunks[:MAX_INDEXED_CHUNKS]
-            _indexed_chunks[thread_key] = chunks
-            _embeddings_ready[thread_key] = False
-            print("[DOC LOADER] stage=embed DEFERRED until search_in_document", flush=True)
-
-        _page_texts[thread_key] = page_texts or []
-        if page_count > 0 and ext == ".pdf":
-            _document_outlines[thread_key] = await _await_index_stage(
-                "outline",
-                asyncio.to_thread(_build_document_outline, file_path, page_texts),
-            )
-            absolute_to_label, label_to_absolute = await _await_index_stage(
-                "page_labels",
-                asyncio.to_thread(_build_page_label_maps, file_path, page_count),
-            )
-            _page_label_maps[thread_key] = absolute_to_label
-            _page_label_reverse[thread_key] = label_to_absolute
-            _printed_page_offsets[thread_key] = (
-                None if label_to_absolute
-                else (_detect_printed_page_offset(page_texts) if page_texts else None)
-            )
-        else:
+            context, _page_texts_unused = await _load_document_text(file_path)
+            if context == CORRUPTED_DOCUMENT_MESSAGE:
+                return context
+            _pdf_page_counts[thread_key] = 0
+            _scan_mode[thread_key] = False
             _document_outlines[thread_key] = []
             _page_label_maps[thread_key] = {}
             _page_label_reverse[thread_key] = {}
             _printed_page_offsets[thread_key] = None
-
+            _page_texts[thread_key] = []
+            chunks, was_truncated = await _embed_plain_text(thread_key, stored_path, context)
+            _indexed_chunks[thread_key] = []
+            _embeddings_ready[thread_key] = chunks > 0
+            del context
+        await _persist_index_row(thread_key, stored_path, embed_complete=True)
         _indexed_file_paths[thread_key] = file_path
         return _index_ready_message(
             thread_key,
             skipped=False,
-            chunks=len(chunks),
+            chunks=chunks,
             was_truncated=was_truncated,
-            embedded=False,
+            embedded=True,
         )
-
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
+        await _drop_partial()
         return (
             "Xəta: Sənədin indekslənməsi vaxt limitini keçdi (OCR, mətn çıxarışı və ya "
             "embedding mərhələsi cavab vermədi). Zəhmət olmasa sənədi yenidən yükləyin "
             "və ya daha kiçik bir fayl istifadə edin."
         )
     except Exception as e:
+        await _drop_partial()
         return f"Sənədin indekslənməsi zamanı xəta baş verdi: {str(e)}"
     finally:
         print(f"[TIMING] Tool Doc Indexing Ended - Took {time.time() - t0:.2f}s", flush=True)
@@ -2022,8 +2611,7 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
     if absolute_end - absolute_start + 1 > MAX_PAGE_RANGE:
         absolute_end = absolute_start + MAX_PAGE_RANGE - 1
 
-    page_texts = _page_texts.get(thread_key) or []
-    selected = page_texts[absolute_start - 1:absolute_end] if page_texts else []
+    selected = await load_page_span(thread_key, absolute_start, absolute_end)
     selected_text = "\n\n".join(selected).strip() if selected else ""
     printed_start = _absolute_to_printed_label(thread_key, absolute_start)
     printed_end = _absolute_to_printed_label(thread_key, absolute_end)
@@ -2037,16 +2625,17 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
 
     span = absolute_end - absolute_start + 1
     if span <= SHORT_DOC_MAX_PAGES:
-        from vision_extract import vision_extract_pages, crop_diagrams_to_data_urls
+        from vision_extract import crop_diagrams_in_child, vision_extract_pages
         pages = list(range(absolute_start, absolute_end + 1))
         extract = await vision_extract_pages(file_path, pages, marker="worksheet")
         payload = extract.model_dump()
         payload["abs_page"] = absolute_start
         payload["file_path"] = file_path
         if extract.diagrams:
-            payload["image_urls"] = crop_diagrams_to_data_urls(
+            jpegs = await crop_diagrams_in_child(
                 file_path, absolute_start, extract.diagrams, page_count=total_pages,
             )
+            payload["image_urls"] = _jpegs_to_data_urls(jpegs)
         _vision_extracts[thread_key] = payload
         if extract.stem.strip():
             return f"[Səhifə {printed_start}-{printed_end}]:\n{extract.stem.strip()}"
@@ -2061,7 +2650,10 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
 def _pages_are_sparse(page_texts: list[str], abs_start: int, abs_end: int) -> bool:
     if not page_texts:
         return True
-    selected = page_texts[abs_start - 1:abs_end]
+    if abs_start == 1 and len(page_texts) >= abs_end:
+        selected = page_texts[abs_start - 1:abs_end]
+    else:
+        selected = page_texts
     if not selected:
         return True
     chars = sum(len((p or "").strip()) for p in selected)
@@ -2166,23 +2758,31 @@ async def _ocr_page_range(
     abs_start: int,
     abs_end: int,
 ) -> list[str]:
-    from vision_extract import FAST_OCR_MAX_PAGES, ocr_pdf_page
+    """OCR a short span inside a child process so RapidOCR does not stay resident."""
+    from pdf_worker import collect_child_messages, ocr_pages_job
+    from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
     cache = _ocr_page_cache.setdefault(thread_key, {})
     end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
-    pages: list[str] = []
-    for abs_page in range(abs_start, end + 1):
-        if abs_page in cache:
-            pages.append(cache[abs_page])
-            continue
+    missing = [page for page in range(abs_start, end + 1) if page not in cache]
+    if missing:
         try:
-            text = await ocr_pdf_page(file_path, abs_page)
-        except Exception as e:
-            print(f"[VISION] OCR page {abs_page} failed: {e}", flush=True)
-            text = ""
-        cache[abs_page] = text
-        pages.append(text)
-    return pages
+            messages = await asyncio.to_thread(
+                collect_child_messages,
+                ocr_pages_job,
+                (file_path, missing, FAST_OCR_DPI),
+                20,
+                90,
+            )
+        except Exception as exc:
+            print(f"[VISION] OCR child failed: {exc}", flush=True)
+            messages = []
+        for msg in messages:
+            if msg.get("kind") == "ocr":
+                cache[int(msg["page"])] = str(msg.get("text") or "")
+            elif msg.get("kind") == "error":
+                print(f"[VISION] OCR child error: {msg.get('message')}", flush=True)
+    return [cache.get(page, "") for page in range(abs_start, end + 1)]
 
 
 LOCATE_BLOB_MAX_CHARS = 80_000
@@ -2256,6 +2856,99 @@ def get_pipeline_status(thread_key: str) -> str:
     return _pipeline_status.get(thread_key) or ""
 
 
+def _jpegs_to_data_urls(jpegs: list[bytes]) -> list[str]:
+    import base64
+    urls: list[str] = []
+    for jpeg in jpegs or []:
+        if not jpeg:
+            continue
+        urls.append("data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"))
+    return urls
+
+
+def _figure_object_prefix(thread_key: str, marker: str, page: int) -> str:
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        return ""
+    safe = re.sub(r"[^\w\-]+", "_", str(marker))[:40] or "q"
+    return f"{auth[0]}/{thread_key}/figures/{safe}_p{int(page)}"
+
+
+def _storage_object_request(method: str, object_key: str, token: str, body: bytes | None = None, content_type: str = ""):
+    import urllib.error
+    import urllib.request
+
+    url, api_key = _supabase_rest_env()
+    if not url or not api_key or not token or not object_key:
+        return None
+    safe = object_key.replace("\\", "/").lstrip("/")
+    headers = {"Authorization": f"Bearer {token}", "apikey": api_key}
+    data = None
+    if body is not None:
+        data = body
+        headers["Content-Type"] = content_type or "application/octet-stream"
+        headers["x-upsert"] = "true"
+    request = urllib.request.Request(
+        f"{url}/storage/v1/object/documents/{safe}",
+        data=data,
+        method=method,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            print(f"[VISION] storage {method} {safe} failed: {exc.code}", flush=True)
+        return None
+    except Exception as exc:
+        print(f"[VISION] storage {method} {safe} failed: {exc}", flush=True)
+        return None
+
+
+def _load_cached_figure(thread_key: str, marker: str, page: int) -> Optional[dict]:
+    """JPEGs saved after a previous solve of this exact question."""
+    prefix = _figure_object_prefix(thread_key, marker, page)
+    auth = _thread_auth.get(thread_key)
+    if not prefix or not auth:
+        return None
+    raw = _storage_object_request("GET", prefix + ".json", auth[1])
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    blobs: list[bytes] = []
+    for path in meta.get("images") or []:
+        blob = _storage_object_request("GET", str(path), auth[1])
+        if blob:
+            blobs.append(blob)
+    stem = str(meta.get("stem") or "")
+    if not stem and not blobs:
+        return None
+    return {"stem": stem, "image_urls": _jpegs_to_data_urls(blobs)}
+
+
+def _store_cached_figure(thread_key: str, marker: str, page: int, stem: str, jpegs: list[bytes]) -> None:
+    prefix = _figure_object_prefix(thread_key, marker, page)
+    auth = _thread_auth.get(thread_key)
+    if not prefix or not auth or not jpegs:
+        return
+    paths: list[str] = []
+    for index, jpeg in enumerate(jpegs):
+        if not jpeg:
+            continue
+        path = f"{prefix}_{index}.jpg"
+        saved = _storage_object_request("POST", path, auth[1], jpeg, "image/jpeg")
+        if saved is not None:
+            paths.append(path)
+    if not paths:
+        return
+    body = json.dumps({"stem": stem, "images": paths}).encode("utf-8")
+    _storage_object_request("POST", prefix + ".json", auth[1], body, "application/json")
+
+
 async def _phase2_vision_and_figures(
     thread_key: str,
     file_path: str,
@@ -2268,15 +2961,33 @@ async def _phase2_vision_and_figures(
     """N/N+1 (N-1) vision extract. Crops go to `_vision_extracts.image_urls`
     so composer can emit `canvas_op: figure`. Stem is the tool return."""
     set_pipeline_status(thread_key, PIPELINE_STATUS_VISION)
-    from vision_extract import vision_extract_question, crop_diagrams_to_data_urls
+    cached = await asyncio.to_thread(_load_cached_figure, thread_key, number, found_abs)
+    if cached:
+        payload = {
+            "found": True,
+            "stem": cached["stem"],
+            "diagrams": [],
+            "abs_page": found_abs,
+            "file_path": file_path,
+            "image_urls": cached["image_urls"],
+        }
+        _vision_extracts[thread_key] = payload
+        if cached["stem"].strip():
+            return f"[Tapıldı - Səhifə {found_page}]:\n{cached['stem'].strip()}"
+
+    from vision_extract import crop_diagrams_in_child, vision_extract_question
 
     extract = await vision_extract_question(file_path, found_abs, total_pages, number)
     payload = extract.model_dump()
     payload["abs_page"] = found_abs
     payload["file_path"] = file_path
     if extract.diagrams:
-        payload["image_urls"] = crop_diagrams_to_data_urls(
+        jpegs = await crop_diagrams_in_child(
             file_path, found_abs, extract.diagrams, page_count=total_pages,
+        )
+        payload["image_urls"] = _jpegs_to_data_urls(jpegs)
+        await asyncio.to_thread(
+            _store_cached_figure, thread_key, number, found_abs, extract.stem or "", jpegs,
         )
     _vision_extracts[thread_key] = payload
     if extract.found and extract.stem.strip():
@@ -2360,15 +3071,15 @@ async def locate_marker_in_range(
         return f"Xəta: '{marker}' daxilində heç bir nömrə tapılmadı (məs. 'Question 8')."
 
     _, kind_arg = _in_resolved_bank(thread_key, abs_start, abs_end, section_kind)
-    page_texts = _page_texts.get(thread_key) or []
     file_path = _indexed_file_paths[thread_key]
+    from vision_extract import FAST_OCR_MAX_PAGES
+    span_end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
+    selected_pages = await load_page_span(thread_key, abs_start, span_end)
     use_ocr = bool(
-        _scan_mode.get(thread_key) or _pages_are_sparse(page_texts, abs_start, abs_end)
+        _scan_mode.get(thread_key) or _pages_are_sparse(selected_pages, 1, len(selected_pages))
     )
-
-    selected_pages = await _collect_span_pages(
-        thread_key, file_path, page_texts, abs_start, abs_end, use_ocr,
-    )
+    if use_ocr:
+        selected_pages = await _ocr_page_range(thread_key, file_path, abs_start, span_end)
     tagged = _build_tagged_chapter_blob(thread_key, selected_pages, abs_start)
     span_end = abs_start + len(selected_pages) - 1 if selected_pages else abs_end
 
@@ -2670,9 +3381,6 @@ async def search_in_document(query: str, config: RunnableConfig) -> str:
     print("[TIMING] Tool Doc Search Started...", flush=True)
     t0 = time.time()
     try:
-        embed_error = await _embed_stored_chunks(thread_key, config)
-        if embed_error:
-            return embed_error
         chunks = await asyncio.to_thread(search_document_chunks, thread_key, query, limit=5)
         if not chunks:
             return "Xəta: Hələ heç bir fayl indekslənməyib. Əvvəlcə 'process_and_index_documents' tool-unu çağırın."
@@ -3302,6 +4010,25 @@ def recall_struggle_context(thread_id: str, user_prompt: str) -> str:
             snippet = snippet[:277] + "..."
         bullets.append(f"- {topic}: {snippet}")
     return "The student previously struggled with:\n" + "\n".join(bullets)
+
+
+async def ensure_struggle_context(state: dict, config: RunnableConfig) -> dict:
+    """Load struggle memory for an answering turn. Never call this while a PDF child is running."""
+    if (state.get("struggle_context") or "").strip():
+        return {}
+    thread_key = _resolve_thread_key(config)
+    turn = state.get("turn_user_message")
+    text = ""
+    if turn is not None:
+        content = getattr(turn, "content", "") or ""
+        text = content if isinstance(content, str) else str(content)
+    if not text.strip():
+        return {}
+    recalled = await asyncio.to_thread(recall_struggle_context, thread_key, text)
+    if not recalled:
+        return {}
+    print(f"[STRUGGLE] recalled {len(recalled)} chars for thread={thread_key}", flush=True)
+    return {"struggle_context": recalled}
 
 
 # ---------------------------------------------------------------------------
