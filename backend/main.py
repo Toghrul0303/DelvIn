@@ -58,6 +58,8 @@ async def lifespan(app: FastAPI):
     # exactly what a FastAPI lifespan guarantees — hence compiling here rather
     # than at plain module-import time in graph.py.
     async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
+        # Download the ONNX weights once, before /health is up. A failed
+        # load refuses traffic. The image no longer bakes the model in.
         await asyncio.to_thread(load_embedding_model)
         app.state.agent_app = workflow.compile(checkpointer=checkpointer)
         try:

@@ -58,7 +58,7 @@ _FASTEMBED_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L1
 
 
 def _prepare_embedding_cache() -> None:
-    """Point FastEmbed at the cache the Nixpacks build (or a local prefetch) filled."""
+    """Point FastEmbed at a writable cache. Lifespan downloads the model here on first boot."""
     root = os.path.dirname(os.path.abspath(__file__))
     os.environ.setdefault("FASTEMBED_CACHE_PATH", os.path.join(root, ".cache", "fastembed"))
     os.environ.setdefault("HF_HOME", os.path.join(root, ".cache", "huggingface"))

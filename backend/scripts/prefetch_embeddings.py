@@ -1,8 +1,9 @@
-"""Download the embedding model into the image so requests never touch the Hub.
+"""Optional local prefetch of the embedding model.
 
-Railway's start command sets HF_HUB_OFFLINE=1. Run this during the Nixpacks
-build (see railway.toml). Locally, `python scripts/prefetch_embeddings.py`
-from the backend directory fills the same cache lifespan loads.
+Railway does not run this during the image build. The server downloads the
+weights once in `load_embedding_model()` when the container starts. Running
+this script from the backend directory only fills a local cache for offline
+development.
 """
 
 import os
