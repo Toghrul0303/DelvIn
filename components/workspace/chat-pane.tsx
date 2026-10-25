@@ -630,7 +630,7 @@ Answer in the chat only. Do not call python_code_executor. Do not emit canvas st
 }
 
 const PIPELINE_STATUSES = new Set([
-  "Indexing document (large textbooks may take up to 1 minute)...",
+  "Indexing document (the first open of a textbook can take a few minutes)...",
   "Locating target question in document...",
   "Page located, analyzing visual context...",
   "Executing mathematical engine & formulating solution...",
@@ -1149,7 +1149,7 @@ export function ChatPane({
     setIsSending(true)
     setPipelineStatus(
       fileToSend && /pdf/i.test(fileToSend.type || fileToSend.name)
-        ? "Indexing document (large textbooks may take up to 1 minute)..."
+        ? "Indexing document (the first open of a textbook can take a few minutes)..."
         : "",
     )
     streamingAiIdRef.current = aiMessageId
@@ -1175,26 +1175,33 @@ export function ChatPane({
         writeStoredDocumentPath(threadId, rememberedPath)
       }
       const isPdf = Boolean(fileToSend && /pdf/i.test(fileToSend.type || fileToSend.name))
-      const savedDocumentPath = isPdf ? undefined : rememberedPath || undefined
-      if (user && accessToken && isPdf && fileToSend) {
-        void uploadSessionPdf({
+      let savedDocumentPath = rememberedPath || undefined
+      let outboundDocument: File | null = fileToSend
+      if (isPdf && fileToSend) {
+        if (!user || !accessToken) {
+          throw new Error("PDF upload requires a signed-in session")
+        }
+        const uploaded = await uploadSessionPdf({
           userId: user.id,
           threadId,
           file: fileToSend,
           accessToken,
-        }).then((uploaded) => {
-          if (!uploaded) return
-          documentPathRef.current = uploaded
-          writeStoredDocumentPath(threadId, uploaded)
-          patchSession(threadId, { documentPath: uploaded })
         })
+        if (!uploaded) {
+          throw new Error("PDF upload failed")
+        }
+        documentPathRef.current = uploaded
+        writeStoredDocumentPath(threadId, uploaded)
+        patchSession(threadId, { documentPath: uploaded })
+        savedDocumentPath = uploaded
+        outboundDocument = null
       }
       await streamChatCompletion({
         message: prompt,
         threadId,
         mode: effectiveMode as StudyMode,
         uiLanguage: locale,
-        document: fileToSend,
+        document: outboundDocument,
         canvasAnchorId: turnAnchorId,
         canvasRequestId: turnRequestId,
         canvasBranchFromId,
