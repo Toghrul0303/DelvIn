@@ -29,6 +29,7 @@ _MAX_EDGE_PX = 1600
 _JPEG_QUALITY = 70
 _MIN_CHARS_PER_PAGE = 40
 _protocol = None
+_emit_local = threading.local()
 
 
 def _bind_protocol_pipe() -> None:
@@ -91,7 +92,15 @@ def _rss_mb() -> float:
 
 
 def _emit(payload: dict) -> None:
-    """One JSON line on the protocol pipe. Flush so the parent's stall timer sees it."""
+    """One JSON line on the protocol pipe. Flush so the parent's stall timer sees it.
+
+    A Modal worker sets `_emit_local.hook` on the job thread and receives the
+    same dicts without going through stdout.
+    """
+    hook = getattr(_emit_local, "hook", None)
+    if hook is not None:
+        hook(payload)
+        return
     line = json.dumps(payload, ensure_ascii=False)
     if _protocol is None:
         print(line, flush=True)

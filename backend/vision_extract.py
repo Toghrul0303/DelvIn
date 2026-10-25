@@ -41,7 +41,6 @@ DEEPSEEK_ONLY = os.getenv("DEEPSEEK_ONLY", "").strip() == "1"
 DEEPSEEK_VISION_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
-_rapidocr_engine = None
 _vision_llm = None
 _locate_llm = None
 _inventory_llm = None
@@ -142,105 +141,6 @@ Rules:
 - If that question's figure contains printed numerals, variables, units, or labels, merge them into THAT question's stem as given data.
 - If the image has no numbered questions, return an empty questions list.
 """
-
-
-def render_page_jpeg(file_path: str, abs_page: int, dpi: int) -> bytes:
-    """1-indexed PDF page → JPEG bytes. Raises if the page does not exist."""
-    import pymupdf as fitz
-
-    doc = fitz.open(file_path)
-    try:
-        pix = _render_pixmap(doc, abs_page, dpi)
-        return pix.tobytes("jpeg")
-    finally:
-        doc.close()
-
-
-def render_page_rgb(file_path: str, abs_page: int, dpi: int):
-    """1-indexed PDF page → RGB uint8 ndarray (copied, safe after close)."""
-    import numpy as np
-    import pymupdf as fitz
-
-    doc = fitz.open(file_path)
-    try:
-        pix = _render_pixmap(doc, abs_page, dpi)
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-            pix.height, pix.width, pix.n
-        ).copy()
-        if img.shape[-1] == 4:
-            img = img[:, :, :3]
-        return img
-    finally:
-        doc.close()
-
-
-def _render_pixmap(doc, abs_page: int, dpi: int):
-    import pymupdf as fitz
-
-    if abs_page < 1 or abs_page > doc.page_count:
-        raise IndexError(f"PDF page {abs_page} out of range 1..{doc.page_count}")
-    zoom = dpi / 72.0
-    return doc.load_page(abs_page - 1).get_pixmap(
-        matrix=fitz.Matrix(zoom, zoom), alpha=False,
-    )
-
-
-def _get_rapidocr():
-    global _rapidocr_engine
-    if _rapidocr_engine is None:
-        from rapidocr import RapidOCR
-        print("[VISION] RapidOCR engine loading...", flush=True)
-        t0 = time.time()
-        _rapidocr_engine = RapidOCR()
-        print(f"[VISION] RapidOCR engine ready in {time.time() - t0:.2f}s", flush=True)
-    return _rapidocr_engine
-
-
-def ocr_jpeg_bytes(jpeg: bytes) -> str:
-    """Low-fidelity page text for question-number localization only."""
-    import numpy as np
-
-    arr = np.frombuffer(jpeg, dtype=np.uint8)
-    img = None
-    try:
-        import cv2
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    except Exception:
-        img = None
-    if img is None:
-        from io import BytesIO
-        from PIL import Image
-        img = np.array(Image.open(BytesIO(jpeg)).convert("RGB"))
-    return ocr_rgb_array(img)
-
-
-def ocr_rgb_array(img) -> str:
-    engine = _get_rapidocr()
-    result = engine(img)
-    return "\n".join(_rapidocr_lines(result))
-
-
-def _rapidocr_lines(result) -> list[str]:
-    txts = getattr(result, "txts", None)
-    if txts is not None:
-        try:
-            lines = [str(t).strip() for t in list(txts) if str(t).strip()]
-        except TypeError:
-            lines = []
-        if lines:
-            return lines
-    # Older RapidOCR: (det_results, elapse) where det_results is
-    # [[box, text, score], ...]
-    payload = result[0] if isinstance(result, (list, tuple)) and result else result
-    if isinstance(payload, (list, tuple)):
-        lines = []
-        for item in payload:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                text = str(item[1]).strip()
-                if text:
-                    lines.append(text)
-        return lines
-    return []
 
 
 def _gemini_api_key() -> Optional[str]:
@@ -471,13 +371,14 @@ async def vision_extract_pages(
     abs_pages: list[int],
     marker: str,
     previous_page: bool = False,
+    access_token: str = "",
 ) -> VisionExtract:
     """Render `abs_pages` at VISION_DPI and ask Gemini Flash for a stem."""
     pages = [p for p in abs_pages if p >= 1]
     if not pages:
         return VisionExtract(found=False, stem="")
 
-    jpegs = await _render_pages_in_child(file_path, pages, VISION_DPI)
+    jpegs = await _render_pages_in_child(file_path, pages, VISION_DPI, access_token)
 
     prompt = (_PREV_PAGE_PROMPT if previous_page else _EXTRACT_PROMPT).format(
         marker=marker,
@@ -571,18 +472,21 @@ async def vision_extract_question(
     page_n: int,
     page_count: int,
     marker: str,
+    access_token: str = "",
 ) -> VisionExtract:
     """Page N + N+1, then N-1 if the model says the figure is behind."""
     spread = [page_n]
     if page_n + 1 <= page_count:
         spread.append(page_n + 1)
-    extract = await vision_extract_pages(file_path, spread, marker, previous_page=False)
+    extract = await vision_extract_pages(
+        file_path, spread, marker, previous_page=False, access_token=access_token,
+    )
     if not extract.figure_on_previous_page or page_n <= 1:
         return extract
 
     print(f"[VISION] N-1 fallback for marker={marker} page={page_n}", flush=True)
     prev = await vision_extract_pages(
-        file_path, [page_n - 1, page_n], marker, previous_page=True,
+        file_path, [page_n - 1, page_n], marker, previous_page=True, access_token=access_token,
     )
     if prev.stem and (not extract.stem or len(prev.stem) > len(extract.stem)):
         extract.stem = prev.stem
@@ -597,17 +501,23 @@ async def vision_extract_question(
     return _clamp_boxes(extract)
 
 
-async def _render_pages_in_child(file_path: str, pages: list[int], dpi: int) -> list[bytes]:
-    """One short-lived process renders the pages, then it is killed."""
-    from pdf_worker import collect_child_messages
+async def _render_pages_in_child(
+    file_path: str,
+    pages: list[int],
+    dpi: int,
+    access_token: str,
+) -> list[bytes]:
+    """Modal renders the pages. PyMuPDF does not stay on Railway."""
+    from modal_client import SHORT_BUDGET_SECONDS, SHORT_STALL_SECONDS, collect_remote_messages
 
     messages = await asyncio.to_thread(
-        collect_child_messages,
+        collect_remote_messages,
         "render",
         file_path,
+        access_token,
         {"pages": list(pages), "dpi": dpi},
-        20,
-        45,
+        SHORT_STALL_SECONDS,
+        SHORT_BUDGET_SECONDS,
     )
     by_page: dict[int, bytes] = {}
     for msg in messages:
@@ -624,9 +534,10 @@ async def crop_diagrams_in_child(
     diagrams: list,
     page_count: Optional[int] = None,
     dpi: int = VISION_DPI,
+    access_token: str = "",
 ) -> list[bytes]:
-    """Crop at most three boxes in a child process. Returns JPEG bytes."""
-    from pdf_worker import collect_child_messages
+    """Crop at most three boxes on Modal. Returns JPEG bytes."""
+    from modal_client import SHORT_BUDGET_SECONDS, SHORT_STALL_SECONDS, collect_remote_messages
 
     jobs = []
     for box in (diagrams or [])[:3]:
@@ -648,12 +559,13 @@ async def crop_diagrams_in_child(
     if not jobs:
         return []
     messages = await asyncio.to_thread(
-        collect_child_messages,
+        collect_remote_messages,
         "crop",
         file_path,
+        access_token,
         {"boxes": jobs, "dpi": dpi},
-        20,
-        45,
+        SHORT_STALL_SECONDS,
+        SHORT_BUDGET_SECONDS,
     )
     by_index: dict[int, bytes] = {}
     for msg in messages:
@@ -663,62 +575,6 @@ async def crop_diagrams_in_child(
         if msg.get("kind") == "crop" and msg.get("data"):
             by_index[int(msg["index"])] = msg["data"]
     return [by_index[i] for i in range(len(jobs)) if by_index.get(i)]
-
-
-def crop_page_box(file_path: str, abs_page: int, box: DiagramBox, dpi: int = VISION_DPI) -> bytes:
-    """Clip a 0–1 box from a PDF page and return JPEG bytes."""
-    import pymupdf as fitz
-
-    doc = fitz.open(file_path)
-    try:
-        if abs_page < 1 or abs_page > doc.page_count:
-            raise IndexError(f"PDF page {abs_page} out of range 1..{doc.page_count}")
-        page = doc.load_page(abs_page - 1)
-        rect = page.rect
-        pad = 0.015
-        x0 = max(0.0, min(1.0, min(box.x_min, box.x_max) - pad))
-        y0 = max(0.0, min(1.0, min(box.y_min, box.y_max) - pad))
-        x1 = max(0.0, min(1.0, max(box.x_min, box.x_max) + pad))
-        y1 = max(0.0, min(1.0, max(box.y_min, box.y_max) + pad))
-        clip = fitz.Rect(
-            rect.x0 + x0 * rect.width,
-            rect.y0 + y0 * rect.height,
-            rect.x0 + x1 * rect.width,
-            rect.y0 + y1 * rect.height,
-        )
-        zoom = dpi / 72.0
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
-        return pix.tobytes("jpeg")
-    finally:
-        doc.close()
-
-
-def crop_diagrams_to_data_urls(
-    file_path: str,
-    page_n: int,
-    diagrams: list,
-    page_count: Optional[int] = None,
-) -> list[str]:
-    """Render up to 3 clamped boxes as `data:image/jpeg;base64,...` URLs."""
-    urls: list[str] = []
-    for box in (diagrams or [])[:3]:
-        if not isinstance(box, DiagramBox):
-            try:
-                box = DiagramBox.model_validate(box)
-            except Exception:
-                continue
-        abs_page = page_n + int(box.page_offset or 0)
-        if page_count and (abs_page < 1 or abs_page > page_count):
-            continue
-        try:
-            jpeg = crop_page_box(file_path, abs_page, box)
-        except Exception as e:
-            print(f"[VISION] crop failed page={abs_page}: {e}", flush=True)
-            continue
-        if not jpeg:
-            continue
-        urls.append("data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"))
-    return urls
 
 
 FIGURE_MAX_EDGE_PX = 1280
@@ -806,17 +662,18 @@ def crop_image_diagrams_to_data_urls(file_path: str, diagrams: list) -> list[str
     return urls
 
 
-async def ocr_pdf_page(file_path: str, abs_page: int) -> str:
-    """One page of OCR in a child process. RapidOCR does not stay in the server."""
-    from pdf_worker import collect_child_messages
+async def ocr_pdf_page(file_path: str, abs_page: int, access_token: str = "") -> str:
+    """One page of OCR on Modal. RapidOCR does not stay on Railway."""
+    from modal_client import SHORT_BUDGET_SECONDS, SHORT_STALL_SECONDS, collect_remote_messages
 
     messages = await asyncio.to_thread(
-        collect_child_messages,
+        collect_remote_messages,
         "ocr",
         file_path,
+        access_token,
         {"pages": [abs_page], "dpi": FAST_OCR_DPI},
-        20,
-        60,
+        SHORT_STALL_SECONDS,
+        SHORT_BUDGET_SECONDS,
     )
     for msg in messages:
         if msg.get("kind") == "ocr" and int(msg.get("page") or 0) == abs_page:

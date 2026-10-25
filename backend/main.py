@@ -500,12 +500,6 @@ async def chat_stream_endpoint(
                 _keep_thread_upload(thread_id, temp_path)
             else:
                 _keep_thread_image(thread_id, temp_path)
-            if is_image and _is_storage_object_key(document_path):
-                live = _thread_uploads.get(thread_id) or ""
-                if not (live and os.path.isfile(live)):
-                    restored = _download_storage_object(document_path, access_token or "")
-                    if restored:
-                        _keep_thread_upload(thread_id, restored)
             clean_path = temp_path.replace("\\", "/")
 
             user_prompt = (
@@ -514,16 +508,10 @@ async def chat_stream_endpoint(
             )
             print(f"[TIMING] Document Upload Read Ended - Took {time.time() - t_doc:.2f}s", flush=True)
         elif _is_storage_object_key(document_path):
-            live = _thread_uploads.get(thread_id) or ""
-            if not (live and os.path.isfile(live)):
-                restored = _download_storage_object(document_path, access_token or "")
-                if restored:
-                    _keep_thread_upload(thread_id, restored)
-                    clean_path = restored.replace("\\", "/")
-                    user_prompt = (
-                        f"{message} (File path: {clean_path}; "
-                        f"Original filename: {os.path.basename(document_path)})"
-                    )
+            user_prompt = (
+                f"{message} (File path: {document_path}; "
+                f"Original filename: {os.path.basename(document_path)})"
+            )
 
         requested_mode = (mode or DEFAULT_STUDY_MODE).strip().lower()
         if requested_mode not in {"detailed", "socratic"}:

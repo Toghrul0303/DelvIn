@@ -25,6 +25,18 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from modal_client import (
+    EXTRACT_BUDGET_SECONDS,
+    EXTRACT_STALL_SECONDS,
+    FETCH_SECONDS,
+    SETUP_SECONDS,
+    SHORT_BUDGET_SECONDS,
+    SHORT_STALL_SECONDS,
+    ModalPdfStream,
+    collect_remote_messages,
+    is_storage_object_key,
+    sign_document_url,
+)
 
 # Document vectors stay 384-wide so the existing pgvector column is unchanged.
 # `text-embedding-3-small` supports that width via `dimensions`. One request
@@ -228,6 +240,10 @@ def _thread_user(thread_key: str) -> tuple[str, str]:
     if not auth:
         raise RuntimeError("Signed-in user is required to store document pages")
     return auth
+
+
+def _thread_access_token(thread_key: str) -> str:
+    return _thread_user(thread_key)[1]
 
 
 def delete_document_pages(thread_key: str) -> None:
@@ -499,21 +515,17 @@ EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES = 3
 
 
 def count_pdf_pages(file_path: str) -> int:
-    """Cheap PyMuPDF page count. Returns 0 on missing path, non-PDF, or
-    any error so callers can fail-closed (treat 0 as too large to auto-solve)."""
+    """Page count for a local PDF. A storage key returns 0 so the router
+    asks which page instead of auto-solving an unknown book."""
     if not file_path:
         return 0
     path = str(file_path).strip()
-    if not path.lower().endswith(".pdf"):
+    if not path.lower().endswith(".pdf") or not os.path.isfile(path):
         return 0
-    import pymupdf as fitz
-
     try:
-        doc = fitz.open(path)
-        try:
-            return int(doc.page_count or 0)
-        finally:
-            doc.close()
+        from pypdf import PdfReader
+
+        return len(PdfReader(path).pages)
     except Exception as e:
         print(f"[PDF] count_pdf_pages failed: {e}", flush=True)
         return 0
@@ -1669,9 +1681,12 @@ def _index_ready_message(
     return prefix + extra
 
 
-_PDF_PAGE_STALL_SECONDS = 15
+_PDF_SETUP_SECONDS = SETUP_SECONDS
+# Cold start until the first NDJSON line, then the signed-URL download.
+_PDF_FETCH_SECONDS = FETCH_SECONDS
+_PDF_PAGE_STALL_SECONDS = EXTRACT_STALL_SECONDS
 # Covers page streaming plus the capped embed. A hung page still dies at the stall.
-_PDF_EXTRACT_BUDGET_SECONDS = 600
+_PDF_EXTRACT_BUDGET_SECONDS = EXTRACT_BUDGET_SECONDS
 _PAGE_INSERT_BATCH = 20
 
 
@@ -1900,14 +1915,18 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
     """Read the child page by page. Embed and insert, then drop the page."""
     import gc
 
-    from pdf_worker import PdfChild
-
-    child = PdfChild(
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        raise RuntimeError("Signed-in user is required to read the PDF")
+    signed = sign_document_url(file_path, auth[1])
+    child = ModalPdfStream(
         job,
-        file_path,
+        signed,
         {},
         stall_seconds=_PDF_PAGE_STALL_SECONDS,
         budget_seconds=_PDF_EXTRACT_BUDGET_SECONDS,
+        setup_seconds=_PDF_SETUP_SECONDS,
+        fetch_seconds=_PDF_FETCH_SECONDS,
     )
     outline: Optional[_LiveOutline] = None
     page_count = 0
@@ -2024,17 +2043,9 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
 
 
 async def _index_pdf_document(thread_key: str, file_path: str, stored_path: str) -> dict:
-    try:
-        return await _consume_pdf_child(
-            thread_key, file_path, stored_path, "extract",
-        )
-    except TimeoutError:
-        raise
-    except RuntimeError as exc:
-        print(f"[DOC LOADER] PyMuPDF child failed ({exc}); trying pypdf after it exited", flush=True)
-        return await _consume_pdf_child(
-            thread_key, file_path, stored_path, "pypdf",
-        )
+    return await _consume_pdf_child(
+        thread_key, file_path, stored_path, "extract",
+    )
 
 
 def _apply_pdf_result(thread_key: str, result: dict) -> None:
@@ -2118,8 +2129,9 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
     indexed = _indexed_file_paths.get(thread_key) or ""
     lowered = str(file_path or "").lower()
     is_image = any(lowered.endswith(ext) for ext in _INDEX_WIPE_SKIP_EXTS)
-    if is_image or not (file_path and os.path.isfile(file_path)):
-        if indexed and os.path.isfile(indexed):
+    readable = bool(file_path) and (os.path.isfile(file_path) or is_storage_object_key(file_path))
+    if is_image or not readable:
+        if indexed and (os.path.isfile(indexed) or is_storage_object_key(indexed)):
             print(
                 f"[TIMING] Tool Doc Indexing SKIPPED (kept textbook index): '{file_path}'",
                 flush=True,
@@ -2598,13 +2610,16 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
     if span <= SHORT_DOC_MAX_PAGES:
         from vision_extract import crop_diagrams_in_child, vision_extract_pages
         pages = list(range(absolute_start, absolute_end + 1))
-        extract = await vision_extract_pages(file_path, pages, marker="worksheet")
+        extract = await vision_extract_pages(
+            file_path, pages, marker="worksheet", access_token=_thread_access_token(thread_key),
+        )
         payload = extract.model_dump()
         payload["abs_page"] = absolute_start
         payload["file_path"] = file_path
         if extract.diagrams:
             jpegs = await crop_diagrams_in_child(
                 file_path, absolute_start, extract.diagrams, page_count=total_pages,
+                access_token=_thread_access_token(thread_key),
             )
             payload["image_urls"] = _jpegs_to_data_urls(jpegs)
         _vision_extracts[thread_key] = payload
@@ -2729,22 +2744,26 @@ async def _ocr_page_range(
     abs_start: int,
     abs_end: int,
 ) -> list[str]:
-    """OCR a short span inside a child process so RapidOCR does not stay resident."""
-    from pdf_worker import collect_child_messages
+    """OCR a short span on Modal so RapidOCR does not stay on Railway."""
     from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
     cache = _ocr_page_cache.setdefault(thread_key, {})
     end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
     missing = [page for page in range(abs_start, end + 1) if page not in cache]
     if missing:
+        auth = _thread_auth.get(thread_key)
+        token = auth[1] if auth else ""
         try:
             messages = await asyncio.to_thread(
-                collect_child_messages,
+                collect_remote_messages,
                 "ocr",
                 file_path,
+                token,
                 {"pages": missing, "dpi": FAST_OCR_DPI},
-                20,
-                90,
+                SHORT_STALL_SECONDS,
+                SHORT_BUDGET_SECONDS,
+                SETUP_SECONDS,
+                FETCH_SECONDS,
             )
         except Exception as exc:
             print(f"[VISION] OCR child failed: {exc}", flush=True)
@@ -2810,7 +2829,7 @@ def _build_tagged_chapter_blob(
     return "\n\n".join(parts)
 
 
-PIPELINE_STATUS_INDEX = "Indexing document (large textbooks may take up to 1 minute)..."
+PIPELINE_STATUS_INDEX = "Indexing document (the first open of a textbook can take a few minutes)..."
 PIPELINE_STATUS_LOCATE = "Locating target question in document..."
 PIPELINE_STATUS_VISION = "Page located, analyzing visual context..."
 PIPELINE_STATUS_MATH = "Executing mathematical engine & formulating solution..."
@@ -2949,13 +2968,17 @@ async def _phase2_vision_and_figures(
 
     from vision_extract import crop_diagrams_in_child, vision_extract_question
 
-    extract = await vision_extract_question(file_path, found_abs, total_pages, number)
+    extract = await vision_extract_question(
+        file_path, found_abs, total_pages, number,
+        access_token=_thread_access_token(thread_key),
+    )
     payload = extract.model_dump()
     payload["abs_page"] = found_abs
     payload["file_path"] = file_path
     if extract.diagrams:
         jpegs = await crop_diagrams_in_child(
             file_path, found_abs, extract.diagrams, page_count=total_pages,
+            access_token=_thread_access_token(thread_key),
         )
         payload["image_urls"] = _jpegs_to_data_urls(jpegs)
         await asyncio.to_thread(
