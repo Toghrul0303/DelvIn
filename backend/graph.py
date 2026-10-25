@@ -279,11 +279,11 @@ _DOC_REF_RE = re.compile(
     re.IGNORECASE,
 )
 _FORMULA_EXTRACT_RE = re.compile(
-    r"\b(?:formulas?|düstur(?:lar)?|formul)\b",
+    r"\b(?:formulas?|formül(?:ler(?:i)?)?|düstur(?:lar)?|formul(?:ları)?|формул\w*)\b",
     re.IGNORECASE,
 )
 _READ_ONLY_RE = re.compile(
-    r"\b(summarize|xülasə|extract|oxu|nə yazıb|what does it say|tapşırığı göstər)\b",
+    r"\b(summarize|xülasə|özetle|изложи|кратко|extract|oxu|nə yazıb|what does it say|tapşırığı göstər)\b",
     re.IGNORECASE,
 )
 _ASSIGN_ONLY_RE = re.compile(
@@ -3237,7 +3237,12 @@ def _router_user_payload(raw_text: str) -> str:
     return payload
 
 
-def _heuristic_route(raw_text: str) -> Optional[list[str]]:
+def _is_quick_document_action(body: str) -> bool:
+    """Summarize / extract-formulas chips. These never ask which page."""
+    return bool(_FORMULA_EXTRACT_RE.search(body or "") or _READ_ONLY_RE.search(body or ""))
+
+
+def _heuristic_route(raw_text: str, page_count: Optional[int] = None) -> Optional[list[str]]:
     """Skip the Router LLM entirely for obvious turns (PDF+həll et, greetings).
     Returns None when the cheap classifier should still run."""
     file_path = (_extract_file_path(raw_text) or "").lower()
@@ -3271,10 +3276,11 @@ def _heuristic_route(raw_text: str) -> Optional[list[str]]:
         return ["web_worker"]
 
     if has_file:
-        if _READ_ONLY_RE.search(body) and not _is_generic_query(body):
+        if _is_quick_document_action(body) and not _is_generic_query(body):
             return ["doc_worker"]
         if _is_generic_query(body):
-            page_count = count_pdf_pages(_extract_file_path(raw_text) or "")
+            if page_count is None:
+                page_count = count_pdf_pages(_extract_file_path(raw_text) or "")
             if page_count == 0 or page_count > EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES:
                 print(
                     f"[ROUTER] empty/generic prompt + {page_count or 'unknown'}-page "
@@ -3512,7 +3518,16 @@ async def router_node(
             extracted_text=_cached_image_stem(state) or None,
         )
 
-    heuristic = _heuristic_route(raw_text)
+    page_count = None
+    if (
+        file_path
+        and not _is_image_file_path(file_path)
+        and _is_generic_query(body)
+        and not _is_quick_document_action(body)
+    ):
+        token = str((config.get("configurable") or {}).get("access_token") or "")
+        page_count = await asyncio.to_thread(count_pdf_pages, file_path, token)
+    heuristic = _heuristic_route(raw_text, page_count=page_count)
     if heuristic:
         heuristic = _ensure_socratic_math_worker(state, raw_text or "", heuristic)
         print(f"[ROUTER] heuristic workers={heuristic}", flush=True)
@@ -3598,8 +3613,15 @@ async def chat_worker_node(
     turn_msg = state.get("turn_user_message")
     raw_turn = _extract_text(getattr(turn_msg, "content", "") or "") if turn_msg is not None else ""
     turn_body = _strip_turn_wrappers(raw_turn)
-    if "File path:" in (raw_turn or "") and _is_generic_query(turn_body):
-        page_count = count_pdf_pages(_extract_file_path(raw_turn) or "")
+    if (
+        "File path:" in (raw_turn or "")
+        and _is_generic_query(turn_body)
+        and not _is_quick_document_action(turn_body)
+    ):
+        token = str((config.get("configurable") or {}).get("access_token") or "")
+        page_count = await asyncio.to_thread(
+            count_pdf_pages, _extract_file_path(raw_turn) or "", token,
+        )
         if page_count == 0 or page_count > EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES:
             size_label = str(page_count) if page_count else "unknown"
             context_messages.append(

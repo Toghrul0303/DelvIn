@@ -340,8 +340,29 @@ def _rapidocr_text(result) -> str:
     return "\n".join(lines)
 
 
+def _job_count(file_path: str) -> None:
+    """Page count only. No page text leaves this process."""
+    count = 0
+    try:
+        import pymupdf as fitz
+
+        doc = fitz.open(file_path)
+        try:
+            count = int(doc.page_count or 0)
+        finally:
+            doc.close()
+    except Exception:
+        from pypdf import PdfReader
+
+        count = len(PdfReader(file_path).pages)
+    _emit({"kind": "meta", "page_count": int(count or 0)})
+    _emit({"kind": "done"})
+
+
 def _dispatch(job: str, file_path: str, payload: dict) -> None:
-    if job == "extract":
+    if job == "count":
+        _job_count(file_path)
+    elif job == "extract":
         _job_extract(file_path)
     elif job == "pypdf":
         _job_pypdf(file_path)

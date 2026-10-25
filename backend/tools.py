@@ -509,19 +509,42 @@ SHORT_DOC_BLOCKED_TOOLS = frozenset({
     "resolve_chapter_target",
 })
 # Blank/"həll et" uploads: auto-solve only when the PDF is this short.
-# Larger files (or unreadable/non-PDF → count 0) fail closed and ask
-# for a page/question instead of dumping the whole book into math_worker.
+# Larger files fail closed and ask for a page/question instead of dumping
+# the whole book into math_worker. A storage key is counted on Modal;
+# 0 means the count itself failed.
 EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES = 3
+_page_count_cache: dict[str, int] = {}
+_page_count_lock = threading.Lock()
 
 
-def count_pdf_pages(file_path: str) -> int:
-    """Page count for a local PDF. A storage key returns 0 so the router
-    asks which page instead of auto-solving an unknown book."""
+def count_pdf_pages(file_path: str, access_token: str = "") -> int:
+    """Page count without keeping the PDF body on Railway.
+
+    A local file uses pypdf. A Supabase key asks the Modal parse function
+    for metadata only; the signed download stays on Modal.
+    """
     if not file_path:
         return 0
     path = str(file_path).strip()
-    if not path.lower().endswith(".pdf") or not os.path.isfile(path):
+    if not path.lower().endswith(".pdf"):
         return 0
+    with _page_count_lock:
+        cached = _page_count_cache.get(path)
+    if cached:
+        return cached
+    if os.path.isfile(path):
+        count = _count_local_pdf_pages(path)
+    elif is_storage_object_key(path):
+        count = _count_remote_pdf_pages(path, access_token)
+    else:
+        return 0
+    if count > 0:
+        with _page_count_lock:
+            _page_count_cache[path] = count
+    return count
+
+
+def _count_local_pdf_pages(path: str) -> int:
     try:
         from pypdf import PdfReader
 
@@ -529,6 +552,35 @@ def count_pdf_pages(file_path: str) -> int:
     except Exception as e:
         print(f"[PDF] count_pdf_pages failed: {e}", flush=True)
         return 0
+
+
+def _count_remote_pdf_pages(path: str, access_token: str) -> int:
+    if not (access_token or "").strip():
+        print("[PDF] remote page count skipped: missing user token", flush=True)
+        return 0
+    try:
+        messages = collect_remote_messages(
+            "count",
+            path,
+            access_token,
+            {},
+            SHORT_STALL_SECONDS,
+            SHORT_BUDGET_SECONDS,
+            SETUP_SECONDS,
+            FETCH_SECONDS,
+        )
+    except Exception as exc:
+        print(f"[PDF] remote page count failed: {type(exc).__name__}", flush=True)
+        return 0
+    for msg in messages:
+        if msg.get("kind") == "error":
+            print(f"[PDF] remote page count failed: {msg.get('message')}", flush=True)
+            return 0
+        if msg.get("kind") == "meta":
+            count = int(msg.get("page_count") or 0)
+            print(f"[PDF] remote page_count={count}", flush=True)
+            return count
+    return 0
 
 # ---------------------------------------------------------------------------
 # Logical (printed) <-> absolute page mapping (Tier 1).

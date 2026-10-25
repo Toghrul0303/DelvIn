@@ -169,7 +169,7 @@ def parse(job: PdfJob):
     from fastapi.responses import StreamingResponse
 
     return StreamingResponse(
-        _ndjson(job.job, job.url, job.payload or {}, {"extract", "pypdf", "render", "crop"}),
+        _ndjson(job.job, job.url, job.payload or {}, {"count", "extract", "pypdf", "render", "crop"}),
         media_type="application/x-ndjson",
     )
 
