@@ -23,108 +23,49 @@ from tavily import TavilyClient
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_core.embeddings import Embeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ---------------------------------------------------------------------------
-# Phase 6 fix — GoogleGenerativeAIEmbeddings resource leak / quota exhaustion.
-#
-# Phase 4 made `process_and_index_documents` successfully extract the FULL
-# text of large digital PDFs via PyMuPDF instead of hanging in Docling OCR —
-# but that unlocked a new problem: a 50MB textbook now chunks into 600-1200+
-# pieces, and `Chroma.from_texts(..., embedding=GoogleGenerativeAIEmbeddings(...))`
-# issued ONE BILLED API REQUEST PER CHUNK with no batching or cap — 1000+
-# requests and 400K+ tokens in 15 seconds on a single upload, instantly
-# exhausting the API quota.
-#
-# Fix: embed entirely locally, for $0, with FastEmbed (ONNX-runtime-based).
-# This project's `.venv` ALREADY has `onnxruntime` installed transitively
-# via Docling/RapidOCR, so this adds essentially no new heavy runtime — just
-# the thin `fastembed` wrapper package plus a one-time model download
-# (cached locally afterward, then fully offline). Embedding a document now
-# never makes a network call at all, so there is no per-chunk request, no
-# token metering, and no way for a single large upload to exhaust an
-# external quota ever again.
-#
-# Model choice: `paraphrase-multilingual-MiniLM-L12-v2` (384-dim, ~220MB)
-# rather than an English-only model like `bge-small-en-v1.5` — this app's
-# `STRICT_LANGUAGE_RULE` (agents.py) explicitly supports Azerbaijani, and
-# uploaded documents/queries are not guaranteed to be English.
-# ---------------------------------------------------------------------------
-_FASTEMBED_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# Document vectors stay 384-wide so the existing pgvector column is unchanged.
+# `text-embedding-3-small` supports that width via `dimensions`. One request
+# per chunk was the old quota failure, so every caller sends EMBED_BATCH_SIZE
+# texts and the client refuses a larger HTTP batch.
+EMBED_BATCH_SIZE = 32
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIMENSIONS = 384
+_HEAVY_MODULES = ("fastembed", "onnxruntime", "torch", "pymupdf", "fitz")
 
 
-def _prepare_embedding_cache() -> None:
-    """Point FastEmbed at a writable cache. Lifespan downloads the model here on first boot."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    os.environ.setdefault("FASTEMBED_CACHE_PATH", os.path.join(root, ".cache", "fastembed"))
-    os.environ.setdefault("HF_HOME", os.path.join(root, ".cache", "huggingface"))
-    os.makedirs(os.environ["FASTEMBED_CACHE_PATH"], exist_ok=True)
-    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+class _OpenAIEmbeddings(Embeddings):
+    """Builds the OpenAI client on the first embed, not at import.
 
-
-def load_embedding_model() -> None:
-    """Build the ONNX session once, before the server accepts traffic.
-
-    Lifespan calls this. Request handlers must not be the first embed: that
-    was the Hugging Face download overlapping a PDF parse.
-    """
-    _prepare_embedding_cache()
-    embeddings._loaded()
-    embeddings.embed_query("locknlearn")
-    from pdf_worker import _rss_mb
-
-    print(
-        f"[EMBED] model ready name={_FASTEMBED_MODEL_NAME} "
-        f"threads=1 cpu_count={os.cpu_count()} rss_mb={_rss_mb():.1f} "
-        f"cache={os.environ.get('FASTEMBED_CACHE_PATH')}",
-        flush=True,
-    )
-
-
-class _FastEmbedEmbeddings(Embeddings):
-    """Minimal `langchain_core.embeddings.Embeddings` adapter around
-    `fastembed.TextEmbedding`. Deliberately NOT
-    `langchain_community.embeddings.FastEmbedEmbeddings` — that class lives
-    in a package LangChain has marked for sunset; wrapping the raw
-    `fastembed` API ourselves is a handful of lines, has one fewer
-    dependency layer to break under future version drift, and avoids a
-    deprecation warning on every single embed call."""
-
-    def __init__(self, model_name: str = _FASTEMBED_MODEL_NAME):
-        from fastembed import TextEmbedding
-
-        _prepare_embedding_cache()
-        self._model = TextEmbedding(
-            model_name=model_name,
-            cache_dir=os.environ["FASTEMBED_CACHE_PATH"],
-            threads=1,
-        )
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [vector.tolist() for vector in self._model.embed(texts)]
-
-    def embed_query(self, text: str) -> list[float]:
-        return next(iter(self._model.query_embed(text))).tolist()
-
-
-class _LazyFastEmbedEmbeddings(Embeddings):
-    """Loads the ONNX model on the first embed call, not at import.
-
-    `TextEmbedding` downloads and maps a few hundred MB. Doing that during
-    process startup, after Docling has already imported torch, exceeds the
-    Railway instance memory limit. The kernel kills the process with no
-    Python traceback — the last log line is the Hugging Face download.
+    The current OpenAI SDK raises while constructing the client when
+    `OPENAI_API_KEY` is unset. Doing that at import would take /health down
+    before the boot RSS line can be logged.
     """
 
     def __init__(self) -> None:
-        self._inner: Optional[_FastEmbedEmbeddings] = None
+        self._inner: Optional[OpenAIEmbeddings] = None
         self._lock = threading.Lock()
 
-    def _loaded(self) -> _FastEmbedEmbeddings:
+    def _loaded(self) -> OpenAIEmbeddings:
         if self._inner is None:
             with self._lock:
                 if self._inner is None:
-                    self._inner = _FastEmbedEmbeddings()
+                    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+                    if not key:
+                        raise RuntimeError(
+                            "OPENAI_API_KEY is required for text-embedding-3-small"
+                        )
+                    self._inner = OpenAIEmbeddings(
+                        model=EMBEDDING_MODEL,
+                        dimensions=EMBEDDING_DIMENSIONS,
+                        api_key=key,
+                        chunk_size=EMBED_BATCH_SIZE,
+                        max_retries=6,
+                        timeout=60,
+                        show_progress_bar=False,
+                    )
         return self._inner
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -134,7 +75,37 @@ class _LazyFastEmbedEmbeddings(Embeddings):
         return self._loaded().embed_query(text)
 
 
-embeddings = _LazyFastEmbedEmbeddings()
+embeddings = _OpenAIEmbeddings()
+
+
+def embedding_boot_status() -> dict:
+    """RSS and heavy imports right now. Does not call OpenAI or load a model."""
+    import sys
+
+    from pdf_worker import _rss_mb
+
+    rss = _rss_mb()
+    return {
+        "ok": True,
+        "embedding_backend": "openai",
+        "rss_mb": None if rss < 0 else round(rss, 1),
+        "heavy_loaded": [name for name in _HEAVY_MODULES if name in sys.modules],
+    }
+
+
+def log_embedding_boot() -> dict:
+    """One lifespan line. `heavy` must be empty before /health is served."""
+    status = embedding_boot_status()
+    key = "present" if (os.getenv("OPENAI_API_KEY") or "").strip() else "missing"
+    print(
+        "[EMBED] backend=openai "
+        f"model={EMBEDDING_MODEL} dimensions={EMBEDDING_DIMENSIONS} "
+        f"local_model=false openai_key={key} "
+        f"rss_mb={status['rss_mb']} heavy={status['heavy_loaded']}",
+        flush=True,
+    )
+    return status
+
 
 _thread_auth: dict[str, tuple[str, str]] = {}
 
@@ -220,6 +191,16 @@ def insert_document_chunk_batch(
     auth = _thread_auth.get(thread_key)
     if not auth:
         raise RuntimeError("Signed-in user is required to store document chunks")
+    if len(chunks) != len(vectors):
+        raise RuntimeError(
+            f"embedding batch length {len(vectors)} != chunk length {len(chunks)}"
+        )
+    for vector in vectors:
+        width = len(vector)
+        if width != EMBEDDING_DIMENSIONS:
+            raise RuntimeError(
+                f"embedding width {width} != {EMBEDDING_DIMENSIONS}"
+            )
     user_id, token = auth
     rows = [
         {
@@ -422,7 +403,6 @@ _doc_generation: dict[str, int] = {}
 _vector_write_locks: dict[str, threading.Lock] = {}
 _vector_locks_guard = threading.Lock()
 _embed_gate: Optional[asyncio.Semaphore] = None
-EMBED_BATCH_SIZE = 32
 EMBED_JOB_BUDGET_SECONDS = 150
 
 
@@ -1404,24 +1384,9 @@ async def _extract_pages_pypdf_or_fail(file_path: str) -> tuple[str, Optional[li
         return CORRUPTED_DOCUMENT_MESSAGE, None
 
 
-# Phase 6 defense-in-depth: local embeddings make indexing $0, but a
-# pathological upload (a scanned 2000-page archive, a mis-uploaded dataset
-# dump, etc.) could still produce an unbounded number of chunks, each one
-# living in memory for the life of the process (`_indexed_chunks`,
-# `_vector_stores`) and costing CPU time to embed. This hard cap bounds
-# worst-case latency/memory per document regardless of which embedding
-# backend is behind `embeddings`.
-#
-# 800 chunks at the current chunk_size=1800 covers roughly 350-400 dense
-# textbook pages — generous for any legitimate single upload this app
-# expects. Benchmarked on this machine, the 12-layer multilingual model
-# above costs ~150-200ms/chunk for a full 1800-char chunk (CPU, ONNX), so
-# 800 chunks is a worst case of ~2-3 minutes of one-time, background-thread
-# (non-event-loop-blocking) indexing — still bounded and always $0, unlike
-# the incident this phase fixes. If that latency proves too slow on a given
-# deployment's hardware, lower this value, or trade `_FASTEMBED_MODEL_NAME`
-# down to a smaller/faster 6-layer model (e.g. `BAAI/bge-small-en-v1.5`) in
-# exchange for weaker non-English (incl. Azerbaijani) retrieval quality.
+# Caps how many chunks one document may embed. 800 chunks at chunk_size=1800
+# covers roughly 350-400 dense textbook pages. HTTP batches stay at
+# EMBED_BATCH_SIZE so one upload cannot fan out into one request per chunk.
 MAX_INDEXED_CHUNKS = 800
 
 
@@ -1913,9 +1878,15 @@ async def _embed_chunk_batch(
     chunks: list[str],
     start_index: int,
 ) -> int:
+    chunks = [text for text in chunks if text and text.strip()]
     if not chunks:
         return start_index
     vectors = await asyncio.to_thread(embeddings.embed_documents, chunks)
+    print(
+        f"[EMBED] http batch n={len(chunks)} dim={len(vectors[0]) if vectors else 0} "
+        f"model={EMBEDDING_MODEL}",
+        flush=True,
+    )
     await asyncio.to_thread(
         insert_document_chunk_batch,
         thread_key, stored_path, chunks, vectors, start_index,
@@ -3193,18 +3164,28 @@ async def _run_embedding(
     batches so a cancel or a document change takes effect within one batch, and
     writes to pgvector only after a final currency check (inside the write lock)."""
     async with _get_embed_gate():
+        kept: list[str] = []
         vectors: list[list[float]] = []
         for start in range(0, len(chunks), EMBED_BATCH_SIZE):
             if not _embed_job_is_current(thread_key, generation, user_id):
                 print(f"[EMBED] stale before batch {start} thread={thread_key}", flush=True)
                 return "stale"
-            batch = chunks[start:start + EMBED_BATCH_SIZE]
-            vectors.extend(await asyncio.to_thread(embeddings.embed_documents, batch))
-        insert_batches = max(1, (len(chunks) + 39) // 40)
+            batch = [text for text in chunks[start:start + EMBED_BATCH_SIZE] if text and text.strip()]
+            if not batch:
+                continue
+            embedded = await asyncio.to_thread(embeddings.embed_documents, batch)
+            print(
+                f"[EMBED] http batch n={len(batch)} dim={len(embedded[0]) if embedded else 0} "
+                f"model={EMBEDDING_MODEL}",
+                flush=True,
+            )
+            kept.extend(batch)
+            vectors.extend(embedded)
+        insert_batches = max(1, (len(kept) + 39) // 40)
         written = await asyncio.wait_for(
             asyncio.to_thread(
                 _guarded_replace_chunks,
-                thread_key, stored_path, chunks, vectors, generation, user_id,
+                thread_key, stored_path, kept, vectors, generation, user_id,
             ),
             timeout=45 * insert_batches,
         )

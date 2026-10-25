@@ -1,7 +1,7 @@
 import os
 
-# OpenMP reads these when onnxruntime is first imported. That import happens
-# later, inside load_embedding_model(), so they must be set before graph/tools.
+# OpenMP reads these when onnxruntime is first imported. PDF and OCR children
+# import it later, so the pool size has to be set before graph/tools load.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -38,8 +38,9 @@ from tools import (
     cancel_embed_warmup,
     cancel_all_embed_jobs,
     get_pipeline_status,
+    embedding_boot_status,
     index_struggle_memory,
-    load_embedding_model,
+    log_embedding_boot,
     remember_thread_auth,
 )
 from dotenv import find_dotenv, load_dotenv
@@ -66,10 +67,8 @@ async def lifespan(app: FastAPI):
     # exactly what a FastAPI lifespan guarantees — hence compiling here rather
     # than at plain module-import time in graph.py.
     async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
-        # Download the ONNX weights once, before /health is up. A failed
-        # load refuses traffic. The image no longer bakes the model in.
-        await asyncio.to_thread(load_embedding_model)
         app.state.agent_app = workflow.compile(checkpointer=checkpointer)
+        log_embedding_boot()
         try:
             yield
         finally:
@@ -120,7 +119,7 @@ app.include_router(polar_webhook_router)
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return embedding_boot_status()
 
 
 DEFAULT_STUDY_MODE = "detailed"
