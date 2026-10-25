@@ -21,6 +21,18 @@ EXTRACT_STALL_SECONDS = 15
 EXTRACT_BUDGET_SECONDS = 600
 SHORT_STALL_SECONDS = 20
 SHORT_BUDGET_SECONDS = 180
+_URL_IN_ERROR = re.compile(r"https?://\S+")
+
+
+def public_modal_error(exc: BaseException) -> str:
+    """Exception text safe to show in chat. No signed URL."""
+    text = _URL_IN_ERROR.sub("", str(exc))
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > 160:
+        text = text[:160].rstrip() + "..."
+    if text:
+        return f"{type(exc).__name__}: {text}"
+    return type(exc).__name__
 
 
 def is_storage_object_key(value: str) -> bool:
@@ -139,6 +151,7 @@ class ModalPdfStream:
         self._phase = {"mode": "setup", "since": time.monotonic()}
         self._deadline = time.monotonic() + budget_seconds
         self._gen = None
+        self._reader_thread: threading.Thread | None = None
 
     def __iter__(self):
         return self
@@ -152,11 +165,19 @@ class ModalPdfStream:
         self._stop.set()
         self._close_http()
         gen = self._gen
-        if gen is not None:
-            try:
-                gen.close()
-            except ValueError:
-                pass
+        reader = self._reader_thread
+        if gen is None:
+            return
+        if (
+            reader is not None
+            and reader.is_alive()
+            and threading.current_thread() is not reader
+        ):
+            return
+        try:
+            gen.close()
+        except (ValueError, RuntimeError):
+            pass
 
     def _close_http(self) -> None:
         with self._http_lock:
@@ -196,16 +217,21 @@ class ModalPdfStream:
                 self._close_http()
                 return
 
-    def _raise_if_failed(self) -> None:
+    def _failure_message(self) -> str:
         if self._fail == "stall":
-            raise TimeoutError("pdf child stalled")
+            return "The PDF service stalled before the next page."
         if self._fail == "budget":
-            raise TimeoutError("pdf extract budget")
+            return "The PDF service exceeded its time limit."
+        return ""
 
     def _iterate(self):
-        """Block on one line at a time so a textbook is not buffered on Railway."""
+        """Block on one line at a time so a textbook is not buffered on Railway.
+
+        Timeouts and HTTP failures become one error object. They are not raised.
+        """
         import httpx
 
+        self._reader_thread = threading.current_thread()
         print(f"[PDF] modal stream job={self.job}", flush=True)
         self._deadline = time.monotonic() + self.budget_seconds
         self._phase = {"mode": "setup", "since": time.monotonic()}
@@ -231,7 +257,8 @@ class ModalPdfStream:
                     self._response = response
                 response.raise_for_status()
                 for line in response.iter_lines():
-                    self._raise_if_failed()
+                    if self._fail:
+                        break
                     if not line:
                         continue
                     msg = _decode_line(line)
@@ -241,12 +268,12 @@ class ModalPdfStream:
                     self._phase = {"mode": "work", "since": time.monotonic()}
                     yield msg
                     self._phase = {"mode": "read", "since": time.monotonic()}
-                self._raise_if_failed()
-        except TimeoutError:
-            raise
+            failed = self._failure_message()
+            if failed:
+                yield {"kind": "error", "message": failed}
         except Exception as exc:
-            self._raise_if_failed()
-            raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+            failed = self._failure_message()
+            yield {"kind": "error", "message": failed or public_modal_error(exc)}
         finally:
             self._stop.set()
             self._close_http()

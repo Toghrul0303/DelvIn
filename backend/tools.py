@@ -508,11 +508,21 @@ SHORT_DOC_BLOCKED_TOOLS = frozenset({
     "get_document_outline",
     "resolve_chapter_target",
 })
-# Blank/"həll et" uploads: auto-solve only when the PDF is this short.
-# Larger files fail closed and ask for a page/question instead of dumping
-# the whole book into math_worker. A storage key is counted on Modal;
-# 0 means the count itself failed.
-EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES = 3
+# Same ceiling as the short-doc tool block. A failed count is unknown,
+# not "too big" — only a real page count above this asks which page.
+EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES = SHORT_DOC_MAX_PAGES
+PDF_ASK_PAGE = "[ASK_PAGE]"
+PDF_INDEX_ERROR = "[INDEX_ERROR]"
+_pdf_turn_body: dict[str, str] = {}
+_QUICK_SOLVE_RE = re.compile(
+    r"\b(solve the problem|sualı həll et|problemi çöz|решить задачу|həll et|solve this|solve it)\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_TARGET_RE = re.compile(
+    r"\b(?:chapter|fəsil|ch\.?|section|bölmə)\s*\d{1,3}\b"
+    r"|\b(?:question|problem|sual|məsələ)\s*\d{1,3}\b",
+    re.IGNORECASE,
+)
 _page_count_cache: dict[str, int] = {}
 _page_count_lock = threading.Lock()
 
@@ -552,6 +562,59 @@ def _count_local_pdf_pages(path: str) -> int:
     except Exception as e:
         print(f"[PDF] count_pdf_pages failed: {e}", flush=True)
         return 0
+
+
+def remember_pdf_turn(thread_key: str, body: str) -> None:
+    """Student text for this turn, without the file-path wrapper."""
+    if thread_key:
+        _pdf_turn_body[thread_key] = body or ""
+
+
+def _is_bare_solve_turn(body: str) -> bool:
+    """Solve / empty prompt with no chapter or question number."""
+    text = re.sub(r"\s+", " ", (body or "").strip())
+    if _STRUCTURAL_TARGET_RE.search(text):
+        return False
+    if not text or _QUICK_SOLVE_RE.search(text):
+        return True
+    words = text.split()
+    return len(words) <= 4 and bool(re.search(r"\b(solve|həll|problem|hesabla)\b", text, re.IGNORECASE))
+
+
+def _absolute_span_for_chapter(outline: list[dict], page_count: int, body: str) -> Optional[tuple[int, int]]:
+    """Chapter span from the existing TOC helpers. None when the map has no such chapter."""
+    match = re.search(
+        r"\b(?:chapter|fəsil|ch\.?|section|bölmə)\s*(\d{1,3})\b",
+        body or "",
+        re.IGNORECASE,
+    )
+    if not match or not outline or page_count < 1:
+        return None
+    number = match.group(1)
+    chapter_i = _find_chapter_index(outline, number)
+    if chapter_i is not None:
+        ch_start, ch_end = _span_to_next_chapter(outline, chapter_i, page_count)
+    else:
+        block = _chapter_block_pages(outline, number, page_count)
+        if block is None:
+            return None
+        ch_start, ch_end = block
+        chapter_i = None
+    bank_i = (
+        _pick_bank_node(outline, chapter_i, "problems", ch_start, ch_end)
+        if chapter_i is not None else None
+    )
+    if bank_i is not None:
+        bank_start = int(outline[bank_i].get("page_start") or ch_start)
+        abs_start = bank_start if ch_start <= bank_start <= ch_end else ch_start
+        abs_end = ch_end
+    else:
+        abs_start, abs_end = ch_start, ch_end
+    abs_start = max(1, min(abs_start, page_count))
+    abs_end = max(abs_start, min(abs_end, page_count))
+    if abs_end - abs_start + 1 >= page_count:
+        return None
+    return abs_start, abs_end
 
 
 def _count_remote_pdf_pages(path: str, access_token: str) -> int:
@@ -1963,18 +2026,70 @@ async def _embed_chunk_batch(
     return written
 
 
-async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, job: str) -> dict:
+def _empty_pdf_result(error: str = "") -> dict:
+    return {
+        "page_count": 0,
+        "has_text": False,
+        "outline": [],
+        "labels": {},
+        "reverse": {},
+        "offset": None,
+        "embedded": 0,
+        "was_truncated": False,
+        "error": error,
+        "clarify": False,
+        "reextract": None,
+    }
+
+
+def _ask_page_message(page_count: int) -> str:
+    return (
+        f"{PDF_ASK_PAGE}\n"
+        f"This document has {page_count} pages and no chapter or question number. "
+        "Ask which chapter, page, or question to extract. Do not solve it."
+    )
+
+
+def _index_error_message(reason: str) -> str:
+    detail = (reason or "unknown error").strip()
+    return f"{PDF_INDEX_ERROR}\nI couldn't read that PDF ({detail}). Please try again."
+
+
+def _ask_if_bare_long_solve(thread_key: str) -> str:
+    if not _is_bare_solve_turn(_pdf_turn_body.get(thread_key, "")):
+        return ""
+    page_count = int(_pdf_page_counts.get(thread_key) or 0)
+    if page_count > SHORT_DOC_MAX_PAGES:
+        return _ask_page_message(page_count)
+    return ""
+
+
+async def _consume_pdf_child(
+    thread_key: str,
+    file_path: str,
+    stored_path: str,
+    job: str,
+    payload: Optional[dict] = None,
+    on_meta=None,
+) -> dict:
     """Read the child page by page. Embed and insert, then drop the page."""
     import gc
 
+    from modal_client import public_modal_error
+
+    payload = payload or {}
+    child = None
     auth = _thread_auth.get(thread_key)
     if not auth:
-        raise RuntimeError("Signed-in user is required to read the PDF")
-    signed = sign_document_url(file_path, auth[1])
+        return _empty_pdf_result("Signed-in user is required to read the PDF")
+    try:
+        signed = sign_document_url(file_path, auth[1])
+    except Exception as exc:
+        return _empty_pdf_result(public_modal_error(exc))
     child = ModalPdfStream(
         job,
         signed,
-        {},
+        payload,
         stall_seconds=_PDF_PAGE_STALL_SECONDS,
         budget_seconds=_PDF_EXTRACT_BUDGET_SECONDS,
         setup_seconds=_PDF_SETUP_SECONDS,
@@ -1989,6 +2104,8 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
     buffer = ""
     embedded = 0
     was_truncated = False
+    stream_error = ""
+    early: Optional[dict] = None
     splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
 
     def _pull():
@@ -1996,6 +2113,8 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
             return next(child)
         except StopIteration:
             return None
+        except Exception as exc:
+            return {"kind": "error", "message": public_modal_error(exc)}
 
     try:
         while True:
@@ -2004,11 +2123,35 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
                 break
             kind = msg.get("kind")
             if kind == "error":
-                raise RuntimeError(msg.get("message") or "pdf extract failed")
+                stream_error = str(msg.get("message") or "pdf extract failed")
+                if page_count <= 0:
+                    early = _empty_pdf_result(stream_error)
+                break
             if kind == "meta":
                 page_count = int(msg.get("page_count") or 0)
                 has_text = bool(msg.get("has_text"))
                 outline = _LiveOutline(msg.get("toc") or [], page_count)
+                if page_count > 0:
+                    with _page_count_lock:
+                        _page_count_cache[file_path] = page_count
+                if on_meta is not None:
+                    action = on_meta({
+                        "page_count": page_count,
+                        "has_text": has_text,
+                        "toc": msg.get("toc") or [],
+                    })
+                    if action == "clarify":
+                        early = _empty_pdf_result()
+                        early["clarify"] = True
+                        early["page_count"] = page_count
+                        early["has_text"] = has_text
+                        break
+                    if isinstance(action, dict) and action.get("page_start"):
+                        early = _empty_pdf_result()
+                        early["reextract"] = action
+                        early["page_count"] = page_count
+                        early["has_text"] = has_text
+                        break
                 continue
             if kind == "page":
                 text = _normalize_math_notation(msg.get("text") or "")
@@ -2055,6 +2198,8 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
                 continue
             if kind == "done":
                 break
+        if early is not None:
+            return early
         if page_batch:
             await asyncio.to_thread(
                 insert_document_pages, thread_key, stored_path, page_batch,
@@ -2080,7 +2225,7 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
             offset = _detect_printed_page_offset(offset_sample)
         del offset_sample
         gc.collect()
-        return {
+        result = {
             "page_count": page_count,
             "has_text": has_text,
             "outline": outline.finish() if outline else [],
@@ -2089,14 +2234,47 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
             "offset": offset,
             "embedded": embedded,
             "was_truncated": was_truncated,
+            "error": stream_error,
+            "clarify": False,
+            "reextract": None,
         }
+        return result
     finally:
-        child.close()
+        if child is not None:
+            child.close()
+
+
+def _meta_extract_action(thread_key: str, meta: dict):
+    """Continue, ask for a page, or re-open Modal on the chapter span."""
+    page_count = int(meta.get("page_count") or 0)
+    if page_count <= SHORT_DOC_MAX_PAGES:
+        return None
+    body = _pdf_turn_body.get(thread_key, "")
+    if _is_bare_solve_turn(body):
+        return "clarify"
+    if not meta.get("has_text"):
+        return None
+    entries = _LiveOutline(meta.get("toc") or [], page_count).finish()
+    span = _absolute_span_for_chapter(entries, page_count, body)
+    if not span:
+        return None
+    return {"page_start": span[0], "page_end": span[1]}
 
 
 async def _index_pdf_document(thread_key: str, file_path: str, stored_path: str) -> dict:
-    return await _consume_pdf_child(
+    first = await _consume_pdf_child(
         thread_key, file_path, stored_path, "extract",
+        on_meta=lambda meta: _meta_extract_action(thread_key, meta),
+    )
+    window = first.get("reextract")
+    if not window:
+        return first
+    print(
+        f"[PDF] span extract pages={window['page_start']}-{window['page_end']}",
+        flush=True,
+    )
+    return await _consume_pdf_child(
+        thread_key, file_path, stored_path, "extract", payload=window,
     )
 
 
@@ -2175,6 +2353,10 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
     # chunk -> embed pipeline instead of redoing ~5s of work for nothing.
     if _indexed_file_paths.get(thread_key) == file_path:
         _force_reindex.pop(thread_key, False)
+        ask = _ask_if_bare_long_solve(thread_key)
+        if ask:
+            print(f"[ROUTER] bare solve on { _pdf_page_counts.get(thread_key) }-page index — ask which page", flush=True)
+            return ask
         print(f"[TIMING] Tool Doc Indexing SKIPPED (already indexed): '{file_path}'", flush=True)
         return _index_ready_message(thread_key, skipped=True)
 
@@ -2211,6 +2393,10 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
         and remote.get("file_path") == stored_path
     ):
         _hydrate_document_index(thread_key, remote, file_path)
+        ask = _ask_if_bare_long_solve(thread_key)
+        if ask:
+            print(f"[ROUTER] bare solve on stored { _pdf_page_counts.get(thread_key) }-page index — ask which page", flush=True)
+            return ask
         print(f"[TIMING] Tool Doc Indexing SKIPPED (stored index): '{stored_path}'", flush=True)
         return _index_ready_message(thread_key, skipped=True)
 
@@ -2224,6 +2410,7 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
         except Exception as drop_exc:
             print(f"[DOC LOADER] partial index cleanup failed: {drop_exc}", flush=True)
 
+    partial_note = ""
     try:
         await asyncio.to_thread(delete_remote_document, thread_key)
         ext = os.path.splitext(file_path)[1].lower()
@@ -2231,9 +2418,16 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
         was_truncated = False
         if ext == ".pdf":
             result = await _index_pdf_document(thread_key, file_path, stored_path)
+            if result.get("clarify"):
+                return _ask_page_message(int(result.get("page_count") or 0))
+            if result.get("error") and int(result.get("page_count") or 0) <= 0:
+                return _index_error_message(str(result.get("error") or ""))
             _apply_pdf_result(thread_key, result)
             chunks = int(result["embedded"])
             was_truncated = bool(result["was_truncated"])
+            if result.get("error"):
+                partial_note = f" Some pages could not be read ({result['error']})."
+                print(f"[PDF] partial index kept: {result['error']}", flush=True)
         else:
             context, _page_texts_unused = await _load_document_text(file_path)
             if context == CORRUPTED_DOCUMENT_MESSAGE:
@@ -2257,17 +2451,14 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
             chunks=chunks,
             was_truncated=was_truncated,
             embedded=True,
-        )
+        ) + partial_note
     except (asyncio.TimeoutError, TimeoutError):
         await _drop_partial()
-        return (
-            "Xəta: Sənədin indekslənməsi vaxt limitini keçdi (OCR, mətn çıxarışı və ya "
-            "embedding mərhələsi cavab vermədi). Zəhmət olmasa sənədi yenidən yükləyin "
-            "və ya daha kiçik bir fayl istifadə edin."
-        )
+        return _index_error_message("The PDF service exceeded its time limit.")
     except Exception as e:
         await _drop_partial()
-        return f"Sənədin indekslənməsi zamanı xəta baş verdi: {str(e)}"
+        from modal_client import public_modal_error
+        return _index_error_message(public_modal_error(e))
     finally:
         print(f"[TIMING] Tool Doc Indexing Ended - Took {time.time() - t0:.2f}s", flush=True)
 

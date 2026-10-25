@@ -29,6 +29,9 @@ from tools import (
     SHORT_DOC_BLOCKED_TOOLS,
     count_pdf_pages,
     EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES,
+    remember_pdf_turn,
+    PDF_ASK_PAGE,
+    PDF_INDEX_ERROR,
     reset_thread_document_if_new_file,
     ensure_struggle_context,
     get_indexed_file_path,
@@ -283,7 +286,7 @@ _FORMULA_EXTRACT_RE = re.compile(
     re.IGNORECASE,
 )
 _READ_ONLY_RE = re.compile(
-    r"\b(summarize|xülasə|özetle|изложи|кратко|extract|oxu|nə yazıb|what does it say|tapşırığı göstər)\b",
+    r"\b(summarize|xülasə|özetle|изложи|кратко|oxu|nə yazıb|what does it say|tapşırığı göstər)\b",
     re.IGNORECASE,
 )
 _ASSIGN_ONLY_RE = re.compile(
@@ -3242,7 +3245,7 @@ def _is_quick_document_action(body: str) -> bool:
     return bool(_FORMULA_EXTRACT_RE.search(body or "") or _READ_ONLY_RE.search(body or ""))
 
 
-def _heuristic_route(raw_text: str, page_count: Optional[int] = None) -> Optional[list[str]]:
+def _heuristic_route(raw_text: str) -> Optional[list[str]]:
     """Skip the Router LLM entirely for obvious turns (PDF+həll et, greetings).
     Returns None when the cheap classifier should still run."""
     file_path = (_extract_file_path(raw_text) or "").lower()
@@ -3276,19 +3279,11 @@ def _heuristic_route(raw_text: str, page_count: Optional[int] = None) -> Optiona
         return ["web_worker"]
 
     if has_file:
+        # Page count is unknown until Modal sends meta. A count of 0 must
+        # not ask which page. Short worksheets and "Solve the problem"
+        # go to the solver; a confirmed book longer than 5 pages asks later.
         if _is_quick_document_action(body) and not _is_generic_query(body):
             return ["doc_worker"]
-        if _is_generic_query(body):
-            if page_count is None:
-                page_count = count_pdf_pages(_extract_file_path(raw_text) or "")
-            if page_count == 0 or page_count > EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES:
-                print(
-                    f"[ROUTER] empty/generic prompt + {page_count or 'unknown'}-page "
-                    "document — clarification only (no auto-solve).",
-                    flush=True,
-                )
-                return ["chat_worker"]
-            return ["doc_worker", "math_worker"]
         return ["doc_worker", "math_worker"]
 
     if _DOC_REF_RE.search(body):
@@ -3488,6 +3483,10 @@ async def router_node(
         )
 
     body = _strip_turn_wrappers(raw_text or "")
+    remember_pdf_turn(
+        str((config.get("configurable") or {}).get("thread_id") or ""),
+        body,
+    )
     language_only = _maybe_language_only(body)
     if _image_followup_kind(state, body):
         print("[ROUTER] image question from the screenshot cache → doc_worker", flush=True)
@@ -3518,16 +3517,7 @@ async def router_node(
             extracted_text=_cached_image_stem(state) or None,
         )
 
-    page_count = None
-    if (
-        file_path
-        and not _is_image_file_path(file_path)
-        and _is_generic_query(body)
-        and not _is_quick_document_action(body)
-    ):
-        token = str((config.get("configurable") or {}).get("access_token") or "")
-        page_count = await asyncio.to_thread(count_pdf_pages, file_path, token)
-    heuristic = _heuristic_route(raw_text, page_count=page_count)
+    heuristic = _heuristic_route(raw_text)
     if heuristic:
         heuristic = _ensure_socratic_math_worker(state, raw_text or "", heuristic)
         print(f"[ROUTER] heuristic workers={heuristic}", flush=True)
@@ -3613,16 +3603,16 @@ async def chat_worker_node(
     turn_msg = state.get("turn_user_message")
     raw_turn = _extract_text(getattr(turn_msg, "content", "") or "") if turn_msg is not None else ""
     turn_body = _strip_turn_wrappers(raw_turn)
-    if (
-        "File path:" in (raw_turn or "")
-        and _is_generic_query(turn_body)
-        and not _is_quick_document_action(turn_body)
-    ):
+    ask_page = any(
+        str(getattr(message, "content", "") or "").startswith(PDF_ASK_PAGE)
+        for message in (state.get("messages") or [])
+    )
+    if ask_page or ("File path:" in (raw_turn or "") and _is_generic_query(turn_body)):
         token = str((config.get("configurable") or {}).get("access_token") or "")
         page_count = await asyncio.to_thread(
             count_pdf_pages, _extract_file_path(raw_turn) or "", token,
         )
-        if page_count == 0 or page_count > EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES:
+        if ask_page or page_count > EMPTY_PROMPT_AUTOSOLVE_MAX_PAGES:
             size_label = str(page_count) if page_count else "unknown"
             context_messages.append(
                 HumanMessage(
@@ -3879,6 +3869,36 @@ async def doc_tools_node(state: AgentState, config: RunnableConfig) -> Command[L
     tool_messages = await asyncio.gather(
         *(_invoke_doc_tool(tc) for tc in last_message.tool_calls)
     )
+
+    for tool_message in tool_messages:
+        text = str(tool_message.content or "")
+        if tool_message.name != "process_and_index_documents":
+            continue
+        if text.startswith(PDF_ASK_PAGE):
+            print("[ROUTER] confirmed long PDF — ask which page", flush=True)
+            return Command(
+                update={
+                    "messages": list(tool_messages),
+                    "tool_round_trips": round_trips,
+                    "worker_queue": [],
+                    "planned_workers": ["chat_worker"],
+                },
+                goto="chat_worker_node",
+            )
+        if text.startswith(PDF_INDEX_ERROR):
+            clean = text.split("\n", 1)[1].strip() if "\n" in text else text
+            print(f"[PDF] index error surfaced to chat: {clean}", flush=True)
+            return Command(
+                update={
+                    "messages": list(tool_messages),
+                    "tool_round_trips": round_trips,
+                    "chat_reply": clean,
+                    "extracted_text": state.get("extracted_text") or "",
+                    "worker_queue": [],
+                    "completed_workers": (state.get("completed_workers") or []) + ["doc_worker"],
+                },
+                goto="composer_node",
+            )
 
     update: dict = {"messages": list(tool_messages), "tool_round_trips": round_trips}
 

@@ -135,7 +135,25 @@ def _release_store(fitz_mod) -> None:
     fitz_mod.TOOLS.store_shrink(100)
 
 
-def _job_extract(file_path: str) -> None:
+def _page_window(payload: dict, page_count: int) -> tuple[int, int]:
+    """1-based inclusive span. Missing bounds mean the whole file."""
+    try:
+        start = int((payload or {}).get("page_start") or 1)
+    except (TypeError, ValueError):
+        start = 1
+    try:
+        end = int((payload or {}).get("page_end") or 0)
+    except (TypeError, ValueError):
+        end = 0
+    start = max(1, start)
+    if end <= 0 or end > page_count:
+        end = page_count
+    if start > end:
+        start = 1
+    return start, end
+
+
+def _job_extract(file_path: str, payload: dict | None = None) -> None:
     import pymupdf as fitz
 
     doc = fitz.open(file_path)
@@ -166,14 +184,19 @@ def _job_extract(file_path: str) -> None:
         if not has_text:
             _emit({"kind": "done"})
             return
-        for i in range(page_count):
-            if i < len(cached):
-                text, label = cached[i]
-            else:
-                page = doc.load_page(i)
-                text = page.get_text() or ""
-                label = (page.get_label() or "").strip()
-                page = None
+        start, end = _page_window(payload or {}, page_count)
+        for i in range(start - 1, end):
+            try:
+                if i < len(cached):
+                    text, label = cached[i]
+                else:
+                    page = doc.load_page(i)
+                    text = page.get_text() or ""
+                    label = (page.get_label() or "").strip()
+                    page = None
+            except Exception as exc:
+                print(f"[PDF] page {i + 1} skipped: {type(exc).__name__}", flush=True)
+                text, label = "", ""
             _emit({
                 "kind": "page",
                 "page_index": i + 1,
@@ -189,7 +212,7 @@ def _job_extract(file_path: str) -> None:
         doc.close()
 
 
-def _job_pypdf(file_path: str) -> None:
+def _job_pypdf(file_path: str, payload: dict | None = None) -> None:
     from pypdf import PdfReader
 
     try:
@@ -201,8 +224,13 @@ def _job_pypdf(file_path: str) -> None:
             "toc": [],
             "has_text": True,
         })
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
+        start, end = _page_window(payload or {}, page_count)
+        for i in range(start - 1, end):
+            try:
+                text = reader.pages[i].extract_text() or ""
+            except Exception as exc:
+                print(f"[PDF] pypdf page {i + 1} skipped: {type(exc).__name__}", flush=True)
+                text = ""
             _emit({
                 "kind": "page",
                 "page_index": i + 1,
@@ -363,9 +391,9 @@ def _dispatch(job: str, file_path: str, payload: dict) -> None:
     if job == "count":
         _job_count(file_path)
     elif job == "extract":
-        _job_extract(file_path)
+        _job_extract(file_path, payload)
     elif job == "pypdf":
-        _job_pypdf(file_path)
+        _job_pypdf(file_path, payload)
     elif job == "render":
         _job_render(file_path, payload)
     elif job == "crop":
