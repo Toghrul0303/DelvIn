@@ -1,26 +1,111 @@
 """PDF work that must die with the process.
 
-This module imports PyMuPDF only at call time. It must not import tools.py,
-Docling, or the embedding model: the child would otherwise duplicate the
-parent heap inside the same 1GB cgroup.
+Run as ``python -u -m pdf_worker <job> <path>``. The module imports nothing
+heavier than the standard library until the job function runs, so a child
+started this way does not load FastAPI, the embedding model, or Chroma.
 
-The parent kills the process (SIGKILL on Linux) when a page stalls or the
-job is finished. Killing the process is what returns MuPDF's heap to the OS.
+The parent reads stdout one JSON line at a time and kills the process when
+a read stalls or the budget expires. stderr is inherited, not piped.
 """
 
 from __future__ import annotations
 
+import base64
+import json
+import os
+import subprocess
+import sys
+import threading
 import time
-from queue import Empty
-from typing import Callable
 
 
 _TEXT_SAMPLE_PAGES = 5
 _MIN_CHARS_PER_PAGE = 40
+_protocol = None
 
 
-def extract_pdf_to_queue(file_path: str, queue) -> None:
-    """One open, one page at a time. Sends meta, then pages, then done."""
+def _bind_protocol_pipe() -> None:
+    """JSON lines stay on the original stdout. Everything else goes to stderr.
+
+    PyMuPDF and RapidOCR write to file descriptor 1. That would split a JSON
+    line and stall the parent, so descriptor 1 is pointed at stderr first.
+    """
+    global _protocol
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    _protocol = os.fdopen(saved, "w", encoding="utf-8", buffering=1)
+
+
+def _rss_mb() -> float:
+    """Resident set of this process, in megabytes. -1 when it cannot be read."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    if os.name != "nt":
+        return -1.0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(counters)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi = ctypes.windll.psapi
+        psapi.GetProcessMemoryInfo.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(_Counters), wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        process = kernel32.GetCurrentProcess()
+        if psapi.GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
+            return counters.WorkingSetSize / (1024 * 1024)
+    except Exception:
+        return -1.0
+    return -1.0
+
+
+def _emit(payload: dict) -> None:
+    """One JSON line on the protocol pipe. Flush so the parent's stall timer sees it."""
+    line = json.dumps(payload, ensure_ascii=False)
+    if _protocol is None:
+        print(line, flush=True)
+        return
+    _protocol.write(line + "\n")
+    _protocol.flush()
+
+
+def _emit_error(exc: BaseException) -> None:
+    _emit({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
+
+
+def _emit_jpeg(kind: str, data: bytes, **fields) -> None:
+    _emit({
+        "kind": kind,
+        "data": base64.b64encode(data).decode("ascii") if data else "",
+        **fields,
+    })
+
+
+def _job_extract(file_path: str) -> None:
     import pymupdf as fitz
 
     doc = fitz.open(file_path)
@@ -41,14 +126,14 @@ def extract_pdf_to_queue(file_path: str, queue) -> None:
             sample_chars += len(text.strip())
             page = None
         has_text = sample_n > 0 and (sample_chars / sample_n) >= _MIN_CHARS_PER_PAGE
-        queue.put({
+        _emit({
             "kind": "meta",
             "page_count": page_count,
             "toc": toc_plain,
             "has_text": has_text,
         })
         if not has_text:
-            queue.put({"kind": "done"})
+            _emit({"kind": "done"})
             return
         for i in range(page_count):
             if i < len(cached):
@@ -58,28 +143,27 @@ def extract_pdf_to_queue(file_path: str, queue) -> None:
                 text = page.get_text() or ""
                 label = (page.get_label() or "").strip()
                 page = None
-            queue.put({
+            _emit({
                 "kind": "page",
                 "page_index": i + 1,
                 "text": text,
                 "label": label,
             })
         cached.clear()
-        queue.put({"kind": "done"})
+        _emit({"kind": "done"})
     except Exception as exc:
-        _put_error(queue, exc)
+        _emit_error(exc)
     finally:
         doc.close()
 
 
-def extract_pypdf_to_queue(file_path: str, queue) -> None:
-    """Second parser. The parent starts this only after the MuPDF process is dead."""
+def _job_pypdf(file_path: str) -> None:
     from pypdf import PdfReader
 
     try:
         reader = PdfReader(file_path)
         page_count = len(reader.pages)
-        queue.put({
+        _emit({
             "kind": "meta",
             "page_count": page_count,
             "toc": [],
@@ -87,21 +171,22 @@ def extract_pypdf_to_queue(file_path: str, queue) -> None:
         })
         for i, page in enumerate(reader.pages):
             text = page.extract_text() or ""
-            queue.put({
+            _emit({
                 "kind": "page",
                 "page_index": i + 1,
                 "text": text,
                 "label": "",
             })
-        queue.put({"kind": "done"})
+        _emit({"kind": "done"})
     except Exception as exc:
-        _put_error(queue, exc)
+        _emit_error(exc)
 
 
-def render_jpeg_job(file_path: str, pages: list, dpi: int, queue) -> None:
-    """Render at most a handful of pages. Used when a question is solved, not at upload."""
+def _job_render(file_path: str, payload: dict) -> None:
     import pymupdf as fitz
 
+    pages = payload.get("pages") or []
+    dpi = int(payload.get("dpi") or 144)
     doc = fitz.open(file_path)
     try:
         zoom = dpi / 72.0
@@ -109,31 +194,32 @@ def render_jpeg_job(file_path: str, pages: list, dpi: int, queue) -> None:
         for abs_page in pages:
             page_no = int(abs_page)
             if page_no < 1 or page_no > doc.page_count:
-                queue.put({"kind": "jpeg", "page": page_no, "data": b""})
+                _emit_jpeg("jpeg", b"", page=page_no)
                 continue
             page = doc.load_page(page_no - 1)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
-            queue.put({"kind": "jpeg", "page": page_no, "data": pix.tobytes("jpeg")})
+            _emit_jpeg("jpeg", pix.tobytes("jpeg"), page=page_no)
             pix = None
             page = None
-        queue.put({"kind": "done"})
+        _emit({"kind": "done"})
     except Exception as exc:
-        _put_error(queue, exc)
+        _emit_error(exc)
     finally:
         doc.close()
 
 
-def crop_jpeg_job(file_path: str, boxes: list, dpi: int, queue) -> None:
-    """Clip 0–1 boxes. `boxes` items are dicts with abs_page and x/y min/max."""
+def _job_crop(file_path: str, payload: dict) -> None:
     import pymupdf as fitz
 
+    boxes = payload.get("boxes") or []
+    dpi = int(payload.get("dpi") or 144)
     doc = fitz.open(file_path)
     try:
         zoom = dpi / 72.0
         for index, box in enumerate(boxes):
             abs_page = int(box["abs_page"])
             if abs_page < 1 or abs_page > doc.page_count:
-                queue.put({"kind": "crop", "index": index, "data": b""})
+                _emit_jpeg("crop", b"", index=index)
                 continue
             page = doc.load_page(abs_page - 1)
             rect = page.rect
@@ -149,22 +235,23 @@ def crop_jpeg_job(file_path: str, boxes: list, dpi: int, queue) -> None:
                 rect.y0 + y1 * rect.height,
             )
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
-            queue.put({"kind": "crop", "index": index, "data": pix.tobytes("jpeg")})
+            _emit_jpeg("crop", pix.tobytes("jpeg"), index=index)
             pix = None
             page = None
-        queue.put({"kind": "done"})
+        _emit({"kind": "done"})
     except Exception as exc:
-        _put_error(queue, exc)
+        _emit_error(exc)
     finally:
         doc.close()
 
 
-def ocr_pages_job(file_path: str, pages: list, dpi: int, queue) -> None:
-    """RapidOCR lives in this process only. The parent never keeps the engine."""
+def _job_ocr(file_path: str, payload: dict) -> None:
     import numpy as np
     import pymupdf as fitz
     from rapidocr import RapidOCR
 
+    pages = payload.get("pages") or []
+    dpi = int(payload.get("dpi") or 96)
     engine = RapidOCR()
     doc = fitz.open(file_path)
     try:
@@ -173,7 +260,7 @@ def ocr_pages_job(file_path: str, pages: list, dpi: int, queue) -> None:
         for abs_page in pages:
             page_no = int(abs_page)
             if page_no < 1 or page_no > doc.page_count:
-                queue.put({"kind": "ocr", "page": page_no, "text": ""})
+                _emit({"kind": "ocr", "page": page_no, "text": ""})
                 continue
             page = doc.load_page(page_no - 1)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
@@ -183,56 +270,15 @@ def ocr_pages_job(file_path: str, pages: list, dpi: int, queue) -> None:
             if img.shape[-1] == 4:
                 img = img[:, :, :3]
             result = engine(img)
-            queue.put({"kind": "ocr", "page": page_no, "text": _rapidocr_text(result)})
+            _emit({"kind": "ocr", "page": page_no, "text": _rapidocr_text(result)})
             pix = None
             page = None
             img = None
-        queue.put({"kind": "done"})
+        _emit({"kind": "done"})
     except Exception as exc:
-        _put_error(queue, exc)
+        _emit_error(exc)
     finally:
         doc.close()
-
-
-def collect_child_messages(
-    target: Callable,
-    args: tuple,
-    stall_seconds: float = 20,
-    budget_seconds: float = 60,
-) -> list:
-    """Run `target(*args, queue)` and return every message, including done/error.
-
-    The process is killed when the job finishes or the stall/budget fires,
-    so native allocations do not stay in the parent.
-    """
-    import multiprocessing
-
-    ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue(maxsize=4)
-    proc = ctx.Process(target=target, args=(*args, queue), daemon=False)
-    proc.start()
-    messages: list = []
-    deadline = time.time() + budget_seconds
-    try:
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                raise TimeoutError("pdf child exceeded its time budget")
-            try:
-                msg = queue.get(timeout=min(stall_seconds, remaining))
-            except Empty as exc:
-                raise TimeoutError("pdf child stalled") from exc
-            messages.append(msg)
-            if msg.get("kind") in {"done", "error"}:
-                return messages
-    finally:
-        if proc.is_alive():
-            proc.kill()
-        proc.join(5)
-        try:
-            queue.close()
-        except Exception:
-            pass
 
 
 def _rapidocr_text(result) -> str:
@@ -255,8 +301,229 @@ def _rapidocr_text(result) -> str:
     return "\n".join(lines)
 
 
-def _put_error(queue, exc: BaseException) -> None:
+def _dispatch(job: str, file_path: str, payload: dict) -> None:
+    if job == "extract":
+        _job_extract(file_path)
+    elif job == "pypdf":
+        _job_pypdf(file_path)
+    elif job == "render":
+        _job_render(file_path, payload)
+    elif job == "crop":
+        _job_crop(file_path, payload)
+    elif job == "ocr":
+        _job_ocr(file_path, payload)
+    else:
+        _emit({"kind": "error", "message": f"unknown job {job}"})
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        _emit({"kind": "error", "message": "usage: pdf_worker <job> <path>"})
+        return 2
+    job, file_path = sys.argv[1], sys.argv[2]
+    _bind_protocol_pipe()
+    # RSS before PyMuPDF or RapidOCR. The parent logs this line.
+    _emit({"kind": "ready", "rss_mb": round(_rss_mb(), 1)})
     try:
-        queue.put({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
-    except Exception:
-        pass
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            raise ValueError("job payload must be a JSON object")
+        _dispatch(job, file_path, payload)
+    except Exception as exc:
+        _emit_error(exc)
+        return 1
+    return 0
+
+
+class PdfChild:
+    """One ``python -u -m pdf_worker`` process.
+
+    Iterate it to receive decoded JSON objects, one stdout line at a time.
+    ``close()`` kills, reaps, and closes the stdout pipe.
+    """
+
+    def __init__(
+        self,
+        job: str,
+        file_path: str,
+        payload: dict | None = None,
+        stall_seconds: float = 15,
+        budget_seconds: float = 600,
+    ) -> None:
+        self.job = job
+        self.file_path = file_path
+        self.payload = payload or {}
+        self.stall_seconds = stall_seconds
+        self.budget_seconds = budget_seconds
+        self.proc: subprocess.Popen | None = None
+        self._gen = None
+        self._fail: str | None = None
+        self._stop_lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._gen is None:
+            self._gen = self._iterate()
+        return next(self._gen)
+
+    def close(self) -> None:
+        self._stop_child()
+        gen = self._gen
+        if gen is not None:
+            try:
+                gen.close()
+            except ValueError:
+                pass
+
+    def _stop_child(self) -> None:
+        with self._stop_lock:
+            self._stop_child_locked()
+
+    def _stop_child_locked(self) -> None:
+        proc = self.proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            proc.wait()
+        if proc.stdout is not None and not proc.stdout.closed:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+        if proc.stdin is not None and not proc.stdin.closed:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    def _widen_pipe(self, proc: subprocess.Popen) -> None:
+        """Give one JSON line room to land. The parent still holds only that line."""
+        if os.name != "posix" or proc.stdout is None:
+            return
+        try:
+            import fcntl
+            fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4 * 1024 * 1024)
+        except (AttributeError, OSError):
+            pass
+
+    def _iterate(self):
+        print(
+            f"[PDF CHILD] parent rss_mb={_rss_mb():.1f} job={self.job}",
+            flush=True,
+        )
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-m", "pdf_worker", self.job, self.file_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        self.proc = proc
+        self._widen_pipe(proc)
+        stop = threading.Event()
+        phase = {"mode": "read", "since": time.monotonic()}
+        deadline = time.monotonic() + self.budget_seconds
+
+        def _watch() -> None:
+            while not stop.wait(0.2):
+                if proc.poll() is not None:
+                    return
+                now = time.monotonic()
+                if now >= deadline:
+                    self._fail = "budget"
+                    self._stop_child()
+                    return
+                if phase["mode"] == "read" and now - phase["since"] >= self.stall_seconds:
+                    self._fail = "stall"
+                    self._stop_child()
+                    return
+
+        watcher = threading.Thread(target=_watch, name="pdf-child-watch", daemon=True)
+        watcher.start()
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(json.dumps(self.payload))
+            proc.stdin.close()
+            try:
+                for raw in proc.stdout:
+                    if self._fail:
+                        break
+                    phase["mode"] = "work"
+                    msg = _decode_line(raw)
+                    if msg.get("kind") == "ready":
+                        print(
+                            f"[PDF CHILD] ready rss_mb={msg.get('rss_mb')} job={self.job}",
+                            flush=True,
+                        )
+                        phase["mode"] = "read"
+                        phase["since"] = time.monotonic()
+                        continue
+                    yield msg
+                    phase["mode"] = "read"
+                    phase["since"] = time.monotonic()
+            except (ValueError, OSError):
+                pass
+            if self._fail == "stall":
+                raise TimeoutError("pdf child stalled")
+            if self._fail == "budget":
+                raise TimeoutError("pdf extract budget")
+        finally:
+            stop.set()
+            self._stop_child()
+
+
+def _decode_line(raw: str) -> dict:
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {"kind": "error", "message": f"bad child line: {exc}"}
+    if not isinstance(msg, dict):
+        return {"kind": "error", "message": "child line was not an object"}
+    if msg.get("kind") in {"jpeg", "crop"} and isinstance(msg.get("data"), str):
+        msg["data"] = base64.b64decode(msg["data"]) if msg["data"] else b""
+    return msg
+
+
+def collect_child_messages(
+    job: str,
+    file_path: str,
+    payload: dict | None = None,
+    stall_seconds: float = 20,
+    budget_seconds: float = 60,
+) -> list:
+    """Read a short job to completion. Used for a few pages, not a whole book."""
+    child = PdfChild(job, file_path, payload, stall_seconds, budget_seconds)
+    messages: list = []
+    try:
+        for msg in child:
+            messages.append(msg)
+            if msg.get("kind") in {"done", "error"}:
+                break
+    finally:
+        child.close()
+    return messages
+
+
+if __name__ == "__main__":
+    sys.exit(main())

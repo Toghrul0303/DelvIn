@@ -14,7 +14,6 @@ import re
 import time
 from typing import Optional
 
-import pymupdf as fitz
 from dotenv import find_dotenv, load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -147,6 +146,8 @@ Rules:
 
 def render_page_jpeg(file_path: str, abs_page: int, dpi: int) -> bytes:
     """1-indexed PDF page → JPEG bytes. Raises if the page does not exist."""
+    import pymupdf as fitz
+
     doc = fitz.open(file_path)
     try:
         pix = _render_pixmap(doc, abs_page, dpi)
@@ -158,6 +159,7 @@ def render_page_jpeg(file_path: str, abs_page: int, dpi: int) -> bytes:
 def render_page_rgb(file_path: str, abs_page: int, dpi: int):
     """1-indexed PDF page → RGB uint8 ndarray (copied, safe after close)."""
     import numpy as np
+    import pymupdf as fitz
 
     doc = fitz.open(file_path)
     try:
@@ -173,6 +175,8 @@ def render_page_rgb(file_path: str, abs_page: int, dpi: int):
 
 
 def _render_pixmap(doc, abs_page: int, dpi: int):
+    import pymupdf as fitz
+
     if abs_page < 1 or abs_page > doc.page_count:
         raise IndexError(f"PDF page {abs_page} out of range 1..{doc.page_count}")
     zoom = dpi / 72.0
@@ -595,12 +599,13 @@ async def vision_extract_question(
 
 async def _render_pages_in_child(file_path: str, pages: list[int], dpi: int) -> list[bytes]:
     """One short-lived process renders the pages, then it is killed."""
-    from pdf_worker import collect_child_messages, render_jpeg_job
+    from pdf_worker import collect_child_messages
 
     messages = await asyncio.to_thread(
         collect_child_messages,
-        render_jpeg_job,
-        (file_path, list(pages), dpi),
+        "render",
+        file_path,
+        {"pages": list(pages), "dpi": dpi},
         20,
         45,
     )
@@ -621,7 +626,7 @@ async def crop_diagrams_in_child(
     dpi: int = VISION_DPI,
 ) -> list[bytes]:
     """Crop at most three boxes in a child process. Returns JPEG bytes."""
-    from pdf_worker import collect_child_messages, crop_jpeg_job
+    from pdf_worker import collect_child_messages
 
     jobs = []
     for box in (diagrams or [])[:3]:
@@ -644,8 +649,9 @@ async def crop_diagrams_in_child(
         return []
     messages = await asyncio.to_thread(
         collect_child_messages,
-        crop_jpeg_job,
-        (file_path, jobs, dpi),
+        "crop",
+        file_path,
+        {"boxes": jobs, "dpi": dpi},
         20,
         45,
     )
@@ -661,6 +667,8 @@ async def crop_diagrams_in_child(
 
 def crop_page_box(file_path: str, abs_page: int, box: DiagramBox, dpi: int = VISION_DPI) -> bytes:
     """Clip a 0–1 box from a PDF page and return JPEG bytes."""
+    import pymupdf as fitz
+
     doc = fitz.open(file_path)
     try:
         if abs_page < 1 or abs_page > doc.page_count:
@@ -800,12 +808,13 @@ def crop_image_diagrams_to_data_urls(file_path: str, diagrams: list) -> list[str
 
 async def ocr_pdf_page(file_path: str, abs_page: int) -> str:
     """One page of OCR in a child process. RapidOCR does not stay in the server."""
-    from pdf_worker import collect_child_messages, ocr_pages_job
+    from pdf_worker import collect_child_messages
 
     messages = await asyncio.to_thread(
         collect_child_messages,
-        ocr_pages_job,
-        (file_path, [abs_page], FAST_OCR_DPI),
+        "ocr",
+        file_path,
+        {"pages": [abs_page], "dpi": FAST_OCR_DPI},
         20,
         60,
     )

@@ -19,15 +19,11 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import pymupdf as fitz  # `import fitz` still works but is deprecated upstream
-
 from tavily import TavilyClient
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_core.embeddings import Embeddings
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
 
 # ---------------------------------------------------------------------------
 # Phase 6 fix — GoogleGenerativeAIEmbeddings resource leak / quota exhaustion.
@@ -410,7 +406,7 @@ def search_document_chunks(thread_key: str, query: str, limit: int = 5) -> list[
 # client handles, not per-session data, so sharing them is safe and avoids
 # re-instantiating a client per request.
 # ---------------------------------------------------------------------------
-_vector_stores: dict[str, Chroma] = {}
+_vector_stores: dict[str, object] = {}
 _indexed_chunks: dict[str, list[str]] = {}
 _embeddings_ready: dict[str, bool] = {}
 
@@ -526,6 +522,8 @@ def count_pdf_pages(file_path: str) -> int:
     path = str(file_path).strip()
     if not path.lower().endswith(".pdf"):
         return 0
+    import pymupdf as fitz
+
     try:
         doc = fitz.open(path)
         try:
@@ -961,6 +959,8 @@ def _build_document_outline(file_path: str, page_texts: Optional[list[str]] = No
     Runs synchronously; the caller (`process_and_index_documents`) is
     responsible for offloading this via `asyncio.to_thread`.
     """
+    import pymupdf as fitz
+
     native_entries: list[dict] = []
     total_pages = len(page_texts) if page_texts else 0
     try:
@@ -1021,6 +1021,8 @@ def _build_page_label_maps(file_path: str, total_pages: int) -> tuple[dict[int, 
     `process_and_index_documents` to fall back to `_detect_printed_page_offset`
     (Tier B) instead, not an error.
     """
+    import pymupdf as fitz
+
     absolute_to_label: dict[int, str] = {}
     label_to_absolute: dict[str, int] = {}
     try:
@@ -1258,6 +1260,8 @@ def _pdf_has_text_layer(file_path: str, sample_pages: int = 5, min_chars_per_pag
     is the signal to enter scan mode (TOC + lazy OCR/vision), not a
     file-extension check. May raise on a malformed/truncated PDF — the
     caller (`_load_document_text`) is responsible for catching that."""
+    import pymupdf as fitz
+
     doc = fitz.open(file_path)
     try:
         page_indices = range(min(sample_pages, doc.page_count))
@@ -1282,6 +1286,8 @@ def _extract_pages_fast(file_path: str) -> list[str]:
     question back to an exact page number. May raise on a malformed/
     truncated PDF — the caller (`_load_document_text`) is responsible for
     catching that and trying the secondary extractor instead."""
+    import pymupdf as fitz
+
     doc = fitz.open(file_path)
     try:
         return [doc.load_page(i).get_text() for i in range(doc.page_count)]
@@ -1297,6 +1303,8 @@ def _extract_pages_pypdf(file_path: str) -> list[str]:
     reason as `_extract_pages_fast` above. Raises if it produces no usable
     text either, so the caller can treat "both digital extractors failed" as
     a single, unambiguous failure case."""
+    from langchain_community.document_loaders import PyPDFLoader
+
     pages = [page.page_content for page in PyPDFLoader(file_path).load()]
     if not "".join(pages).strip():
         raise ValueError("PyPDFLoader produced no extractable text either.")
@@ -1913,17 +1921,19 @@ async def _embed_chunk_batch(
     return written
 
 
-async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, target) -> dict:
+async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, job: str) -> dict:
     """Read the child page by page. Embed and insert, then drop the page."""
     import gc
-    import multiprocessing
-    from queue import Empty
 
-    ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue(maxsize=2)
-    proc = ctx.Process(target=target, args=(file_path, queue), daemon=False)
-    proc.start()
-    deadline = time.time() + _PDF_EXTRACT_BUDGET_SECONDS
+    from pdf_worker import PdfChild
+
+    child = PdfChild(
+        job,
+        file_path,
+        {},
+        stall_seconds=_PDF_PAGE_STALL_SECONDS,
+        budget_seconds=_PDF_EXTRACT_BUDGET_SECONDS,
+    )
     outline: Optional[_LiveOutline] = None
     page_count = 0
     has_text = False
@@ -1935,24 +1945,19 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
     was_truncated = False
     splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
 
-    async def _stop_child() -> None:
-        if proc.is_alive():
-            proc.kill()
-        await asyncio.to_thread(proc.join, 5)
+    def _pull():
+        try:
+            return next(child)
+        except StopIteration:
+            return None
 
     try:
         while True:
-            if time.time() > deadline:
-                await _stop_child()
-                raise TimeoutError("pdf extract budget")
-            try:
-                msg = await asyncio.to_thread(queue.get, True, _PDF_PAGE_STALL_SECONDS)
-            except Empty as exc:
-                await _stop_child()
-                raise TimeoutError("pdf extract stalled") from exc
+            msg = await asyncio.to_thread(_pull)
+            if msg is None:
+                break
             kind = msg.get("kind")
             if kind == "error":
-                await _stop_child()
                 raise RuntimeError(msg.get("message") or "pdf extract failed")
             if kind == "meta":
                 page_count = int(msg.get("page_count") or 0)
@@ -2021,7 +2026,6 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
         elif buffer.strip() and embedded >= MAX_INDEXED_CHUNKS:
             was_truncated = True
         buffer = ""
-        await _stop_child()
         reverse: dict[str, int] = {}
         for page_index, label in labels.items():
             reverse.setdefault(label, page_index)
@@ -2041,28 +2045,20 @@ async def _consume_pdf_child(thread_key: str, file_path: str, stored_path: str, 
             "was_truncated": was_truncated,
         }
     finally:
-        if proc.is_alive():
-            proc.kill()
-            proc.join(5)
-        try:
-            queue.close()
-        except Exception:
-            pass
+        child.close()
 
 
 async def _index_pdf_document(thread_key: str, file_path: str, stored_path: str) -> dict:
-    from pdf_worker import extract_pdf_to_queue, extract_pypdf_to_queue
-
     try:
         return await _consume_pdf_child(
-            thread_key, file_path, stored_path, extract_pdf_to_queue,
+            thread_key, file_path, stored_path, "extract",
         )
     except TimeoutError:
         raise
     except RuntimeError as exc:
         print(f"[DOC LOADER] PyMuPDF child failed ({exc}); trying pypdf after it exited", flush=True)
         return await _consume_pdf_child(
-            thread_key, file_path, stored_path, extract_pypdf_to_queue,
+            thread_key, file_path, stored_path, "pypdf",
         )
 
 
@@ -2759,7 +2755,7 @@ async def _ocr_page_range(
     abs_end: int,
 ) -> list[str]:
     """OCR a short span inside a child process so RapidOCR does not stay resident."""
-    from pdf_worker import collect_child_messages, ocr_pages_job
+    from pdf_worker import collect_child_messages
     from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
     cache = _ocr_page_cache.setdefault(thread_key, {})
@@ -2769,8 +2765,9 @@ async def _ocr_page_range(
         try:
             messages = await asyncio.to_thread(
                 collect_child_messages,
-                ocr_pages_job,
-                (file_path, missing, FAST_OCR_DPI),
+                "ocr",
+                file_path,
+                {"pages": missing, "dpi": FAST_OCR_DPI},
                 20,
                 90,
             )
@@ -3932,7 +3929,7 @@ async def python_code_executor(code: str) -> str:
 # Lives next to the LangGraph checkpoint dir under `%LOCALAPPDATA%/LockNLearn`.
 # ---------------------------------------------------------------------------
 _STRUGGLE_COLLECTION = "struggle_memory"
-_struggle_store: Optional[Chroma] = None
+_struggle_store = None
 
 
 def _struggle_persist_dir() -> str:
@@ -3944,9 +3941,11 @@ def _struggle_persist_dir() -> str:
     return persist_dir
 
 
-def _get_struggle_store() -> Chroma:
+def _get_struggle_store():
     global _struggle_store
     if _struggle_store is None:
+        from langchain_chroma import Chroma
+
         persist_dir = _struggle_persist_dir()
         _struggle_store = Chroma(
             collection_name=_STRUGGLE_COLLECTION,
