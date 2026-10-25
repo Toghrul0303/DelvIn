@@ -18,8 +18,15 @@ import sys
 import threading
 import time
 
+# This file is the child interpreter's entry point. Set the pool size before
+# PyMuPDF or RapidOCR import onnxruntime.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 _TEXT_SAMPLE_PAGES = 5
+_MAX_EDGE_PX = 1600
+_JPEG_QUALITY = 70
 _MIN_CHARS_PER_PAGE = 40
 _protocol = None
 
@@ -105,6 +112,20 @@ def _emit_jpeg(kind: str, data: bytes, **fields) -> None:
     })
 
 
+def _capped_matrix(fitz_mod, width_pt: float, height_pt: float, dpi: int):
+    """144 DPI on a normal page. A huge page box is scaled so the long edge is 1600 px."""
+    zoom = dpi / 72.0
+    long_edge = max(float(width_pt), float(height_pt)) * zoom
+    if long_edge > _MAX_EDGE_PX and long_edge > 0:
+        zoom *= _MAX_EDGE_PX / long_edge
+    return fitz_mod.Matrix(zoom, zoom)
+
+
+def _release_store(fitz_mod) -> None:
+    """Empty MuPDF's decoded-image cache. Dropping the pixmap does not do this."""
+    fitz_mod.TOOLS.store_shrink(100)
+
+
 def _job_extract(file_path: str) -> None:
     import pymupdf as fitz
 
@@ -125,6 +146,7 @@ def _job_extract(file_path: str) -> None:
             cached.append((text, label))
             sample_chars += len(text.strip())
             page = None
+            _release_store(fitz)
         has_text = sample_n > 0 and (sample_chars / sample_n) >= _MIN_CHARS_PER_PAGE
         _emit({
             "kind": "meta",
@@ -149,6 +171,7 @@ def _job_extract(file_path: str) -> None:
                 "text": text,
                 "label": label,
             })
+            _release_store(fitz)
         cached.clear()
         _emit({"kind": "done"})
     except Exception as exc:
@@ -189,18 +212,20 @@ def _job_render(file_path: str, payload: dict) -> None:
     dpi = int(payload.get("dpi") or 144)
     doc = fitz.open(file_path)
     try:
-        zoom = dpi / 72.0
-        matrix = fitz.Matrix(zoom, zoom)
         for abs_page in pages:
             page_no = int(abs_page)
             if page_no < 1 or page_no > doc.page_count:
                 _emit_jpeg("jpeg", b"", page=page_no)
                 continue
             page = doc.load_page(page_no - 1)
+            matrix = _capped_matrix(fitz, page.rect.width, page.rect.height, dpi)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
-            _emit_jpeg("jpeg", pix.tobytes("jpeg"), page=page_no)
+            jpeg = pix.tobytes("jpeg", jpg_quality=_JPEG_QUALITY)
             pix = None
             page = None
+            _emit_jpeg("jpeg", jpeg, page=page_no)
+            jpeg = None
+            _release_store(fitz)
         _emit({"kind": "done"})
     except Exception as exc:
         _emit_error(exc)
@@ -215,7 +240,6 @@ def _job_crop(file_path: str, payload: dict) -> None:
     dpi = int(payload.get("dpi") or 144)
     doc = fitz.open(file_path)
     try:
-        zoom = dpi / 72.0
         for index, box in enumerate(boxes):
             abs_page = int(box["abs_page"])
             if abs_page < 1 or abs_page > doc.page_count:
@@ -234,10 +258,14 @@ def _job_crop(file_path: str, payload: dict) -> None:
                 rect.x0 + x1 * rect.width,
                 rect.y0 + y1 * rect.height,
             )
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
-            _emit_jpeg("crop", pix.tobytes("jpeg"), index=index)
+            matrix = _capped_matrix(fitz, clip.width, clip.height, dpi)
+            pix = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
+            jpeg = pix.tobytes("jpeg", jpg_quality=_JPEG_QUALITY)
             pix = None
             page = None
+            _emit_jpeg("crop", jpeg, index=index)
+            jpeg = None
+            _release_store(fitz)
         _emit({"kind": "done"})
     except Exception as exc:
         _emit_error(exc)
@@ -255,14 +283,13 @@ def _job_ocr(file_path: str, payload: dict) -> None:
     engine = RapidOCR()
     doc = fitz.open(file_path)
     try:
-        zoom = dpi / 72.0
-        matrix = fitz.Matrix(zoom, zoom)
         for abs_page in pages:
             page_no = int(abs_page)
             if page_no < 1 or page_no > doc.page_count:
                 _emit({"kind": "ocr", "page": page_no, "text": ""})
                 continue
             page = doc.load_page(page_no - 1)
+            matrix = _capped_matrix(fitz, page.rect.width, page.rect.height, dpi)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                 pix.height, pix.width, pix.n
@@ -270,10 +297,13 @@ def _job_ocr(file_path: str, payload: dict) -> None:
             if img.shape[-1] == 4:
                 img = img[:, :, :3]
             result = engine(img)
-            _emit({"kind": "ocr", "page": page_no, "text": _rapidocr_text(result)})
+            text = _rapidocr_text(result)
+            result = None
+            img = None
             pix = None
             page = None
-            img = None
+            _emit({"kind": "ocr", "page": page_no, "text": text})
+            _release_store(fitz)
         _emit({"kind": "done"})
     except Exception as exc:
         _emit_error(exc)

@@ -1,4 +1,12 @@
 import os
+
+# OpenMP reads these when onnxruntime is first imported. That import happens
+# later, inside load_embedding_model(), so they must be set before graph/tools.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import re
 import json
 import time

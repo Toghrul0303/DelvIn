@@ -71,8 +71,11 @@ def load_embedding_model() -> None:
     _prepare_embedding_cache()
     embeddings._loaded()
     embeddings.embed_query("locknlearn")
+    from pdf_worker import _rss_mb
+
     print(
         f"[EMBED] model ready name={_FASTEMBED_MODEL_NAME} "
+        f"threads=1 cpu_count={os.cpu_count()} rss_mb={_rss_mb():.1f} "
         f"cache={os.environ.get('FASTEMBED_CACHE_PATH')}",
         flush=True,
     )
@@ -94,6 +97,7 @@ class _FastEmbedEmbeddings(Embeddings):
         self._model = TextEmbedding(
             model_name=model_name,
             cache_dir=os.environ["FASTEMBED_CACHE_PATH"],
+            threads=1,
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
