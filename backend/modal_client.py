@@ -98,12 +98,37 @@ def _endpoint(job: str) -> str:
     return url
 
 
+def _token_value(name: str) -> str:
+    value = (os.getenv(name) or "").strip().strip('"').strip("'")
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    return value
+
+
 def _auth_headers() -> dict[str, str]:
-    key = (os.getenv("MODAL_KEY") or "").strip()
-    secret = (os.getenv("MODAL_SECRET") or "").strip()
+    """Headers Modal's proxy checks before the web endpoint runs.
+
+    `requires_proxy_auth=True` accepts either pair, and nothing else:
+    Modal-Key / Modal-Secret, or Authorization: Bearer <id>.<secret>.
+    Those values are proxy tokens (wk- / ws-). API tokens (ak- / as-)
+    are a different credential and the proxy answers 401.
+    """
+    key = _token_value("MODAL_KEY")
+    secret = _token_value("MODAL_SECRET")
     if not key or not secret:
         raise RuntimeError("MODAL_KEY and MODAL_SECRET are required")
-    return {"Modal-Key": key, "Modal-Secret": secret}
+    if key.startswith("ak-") or secret.startswith("as-"):
+        raise RuntimeError(
+            "MODAL_KEY and MODAL_SECRET are API tokens (ak- / as-). "
+            "The PDF endpoint requires a proxy token (wk- / ws-). "
+            "Create one with `modal workspace proxy-tokens create` "
+            "and put that pair in these two variables."
+        )
+    return {
+        "Modal-Key": key,
+        "Modal-Secret": secret,
+        "Authorization": f"Bearer {key}.{secret}",
+    }
 
 
 def _decode_line(raw: str) -> dict:
