@@ -434,6 +434,38 @@ class _EmbedJob:
 _embed_jobs: dict[str, _EmbedJob] = {}
 
 
+@dataclass
+class _PdfIndexJob:
+    """One Modal extract per storage key. `ready` fires when the outline and
+    page count are stored; `task` keeps streaming pages and chunks after that."""
+    ready: asyncio.Event
+    storage_key: str
+    thread_key: str
+    task: Optional[asyncio.Task] = None
+    snapshot: Optional[dict] = None
+
+
+_pdf_index_jobs: dict[str, _PdfIndexJob] = {}
+_pdf_index_guard: Optional[asyncio.Lock] = None
+
+
+def _pdf_index_lock() -> asyncio.Lock:
+    global _pdf_index_guard
+    if _pdf_index_guard is None:
+        _pdf_index_guard = asyncio.Lock()
+    return _pdf_index_guard
+
+
+def _pdf_job_key(storage_key: str) -> str:
+    return (storage_key or "").replace("\\", "/").lstrip("/")
+
+
+def _index_generation_current(thread_key: str, generation: Optional[int]) -> bool:
+    if generation is None:
+        return True
+    return _doc_generation.get(thread_key, 0) == generation
+
+
 def _vector_write_lock(thread_key: str) -> threading.Lock:
     with _vector_locks_guard:
         lock = _vector_write_locks.get(thread_key)
@@ -2064,6 +2096,37 @@ def _ask_if_bare_long_solve(thread_key: str) -> str:
     return ""
 
 
+def _take_index_chunks(
+    buffer: str,
+    text: str,
+    chunks: list[str],
+    splitter: RecursiveCharacterTextSplitter,
+    was_truncated: bool,
+) -> tuple[str, bool]:
+    """Split page text into the capped chunk list. No network calls."""
+    if len(chunks) >= MAX_INDEXED_CHUNKS:
+        return "", True
+    if not (text or "").strip():
+        return buffer, was_truncated
+    buffer = f"{buffer}\n\n{text}" if buffer else text
+    while len(chunks) < MAX_INDEXED_CHUNKS:
+        pieces = splitter.split_text(buffer)
+        if len(pieces) <= EMBED_BATCH_SIZE:
+            break
+        emit = pieces[:EMBED_BATCH_SIZE]
+        buffer = "\n\n".join(pieces[EMBED_BATCH_SIZE:])
+        room = MAX_INDEXED_CHUNKS - len(chunks)
+        if len(emit) > room:
+            emit = emit[:room]
+            was_truncated = True
+        chunks.extend(piece for piece in emit if piece and piece.strip())
+        if len(chunks) >= MAX_INDEXED_CHUNKS:
+            was_truncated = True
+            buffer = ""
+            break
+    return buffer, was_truncated
+
+
 async def _consume_pdf_child(
     thread_key: str,
     file_path: str,
@@ -2071,8 +2134,11 @@ async def _consume_pdf_child(
     job: str,
     payload: Optional[dict] = None,
     on_meta=None,
+    on_ready=None,
+    config: Optional[RunnableConfig] = None,
+    generation: Optional[int] = None,
 ) -> dict:
-    """Read the child page by page. Embed and insert, then drop the page."""
+    """Read the child page by page. Insert pages and outline; queue embed text."""
     import gc
 
     from modal_client import public_modal_error
@@ -2103,10 +2169,11 @@ async def _consume_pdf_child(
     offset_sample: list[str] = []
     page_batch: list[dict] = []
     buffer = ""
-    embedded = 0
+    chunks: list[str] = []
     was_truncated = False
     stream_error = ""
     early: Optional[dict] = None
+    signaled = False
     splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
 
     def _pull():
@@ -2135,24 +2202,36 @@ async def _consume_pdf_child(
                 if page_count > 0:
                     with _page_count_lock:
                         _page_count_cache[file_path] = page_count
+                action = None
                 if on_meta is not None:
                     action = on_meta({
                         "page_count": page_count,
                         "has_text": has_text,
                         "toc": msg.get("toc") or [],
                     })
-                    if action == "clarify":
-                        early = _empty_pdf_result()
-                        early["clarify"] = True
-                        early["page_count"] = page_count
-                        early["has_text"] = has_text
-                        break
-                    if isinstance(action, dict) and action.get("page_start"):
-                        early = _empty_pdf_result()
-                        early["reextract"] = action
-                        early["page_count"] = page_count
-                        early["has_text"] = has_text
-                        break
+                # Long books: hand the outline back now and keep streaming.
+                # A second question joins this job instead of opening Modal again.
+                if on_ready is not None and page_count > SHORT_DOC_MAX_PAGES and not signaled:
+                    snap = _empty_pdf_result()
+                    snap["page_count"] = page_count
+                    snap["has_text"] = has_text
+                    snap["outline"] = outline.finish() if outline else []
+                    snap["clarify"] = action == "clarify"
+                    await on_ready(snap)
+                    signaled = True
+                    continue
+                if action == "clarify":
+                    early = _empty_pdf_result()
+                    early["clarify"] = True
+                    early["page_count"] = page_count
+                    early["has_text"] = has_text
+                    break
+                if isinstance(action, dict) and action.get("page_start"):
+                    early = _empty_pdf_result()
+                    early["reextract"] = action
+                    early["page_count"] = page_count
+                    early["has_text"] = has_text
+                    break
                 continue
             if kind == "page":
                 text = _normalize_math_notation(msg.get("text") or "")
@@ -2175,27 +2254,10 @@ async def _consume_pdf_child(
                     )
                     page_batch.clear()
                     gc.collect()
-                if has_text and embedded < MAX_INDEXED_CHUNKS and text.strip():
-                    buffer = f"{buffer}\n\n{text}" if buffer else text
-                    while embedded < MAX_INDEXED_CHUNKS:
-                        pieces = splitter.split_text(buffer)
-                        if len(pieces) <= EMBED_BATCH_SIZE:
-                            break
-                        emit = pieces[:EMBED_BATCH_SIZE]
-                        buffer = "\n\n".join(pieces[EMBED_BATCH_SIZE:])
-                        room = MAX_INDEXED_CHUNKS - embedded
-                        if len(emit) > room:
-                            emit = emit[:room]
-                            was_truncated = True
-                        if emit:
-                            embedded = await _embed_chunk_batch(
-                                thread_key, stored_path, emit, embedded,
-                            )
-                            gc.collect()
-                        if embedded >= MAX_INDEXED_CHUNKS:
-                            was_truncated = True
-                            buffer = ""
-                            break
+                if has_text:
+                    buffer, was_truncated = _take_index_chunks(
+                        buffer, text, chunks, splitter, was_truncated,
+                    )
                 continue
             if kind == "done":
                 break
@@ -2206,17 +2268,16 @@ async def _consume_pdf_child(
                 insert_document_pages, thread_key, stored_path, page_batch,
             )
             page_batch.clear()
-        if has_text and buffer.strip() and embedded < MAX_INDEXED_CHUNKS:
-            pieces = splitter.split_text(buffer)
-            while pieces and embedded < MAX_INDEXED_CHUNKS:
-                room = min(EMBED_BATCH_SIZE, MAX_INDEXED_CHUNKS - embedded)
-                emit = pieces[:room]
-                pieces = pieces[room:]
-                embedded = await _embed_chunk_batch(thread_key, stored_path, emit, embedded)
-            if pieces:
+        if has_text and buffer.strip():
+            if len(chunks) < MAX_INDEXED_CHUNKS:
+                pieces = splitter.split_text(buffer)
+                room = MAX_INDEXED_CHUNKS - len(chunks)
+                if len(pieces) > room:
+                    was_truncated = True
+                    pieces = pieces[:room]
+                chunks.extend(piece for piece in pieces if piece and piece.strip())
+            else:
                 was_truncated = True
-        elif buffer.strip() and embedded >= MAX_INDEXED_CHUNKS:
-            was_truncated = True
         buffer = ""
         reverse: dict[str, int] = {}
         for page_index, label in labels.items():
@@ -2233,12 +2294,21 @@ async def _consume_pdf_child(
             "labels": labels,
             "reverse": reverse,
             "offset": offset,
-            "embedded": embedded,
+            "embedded": 0,
             "was_truncated": was_truncated,
             "error": stream_error,
             "clarify": False,
             "reextract": None,
         }
+        if _index_generation_current(thread_key, generation):
+            if page_count > 0:
+                _apply_pdf_result(thread_key, result, file_path=file_path, reset_embeddings=False)
+            if has_text and chunks:
+                _indexed_chunks[thread_key] = list(chunks)
+                if config is not None:
+                    start_embed_warmup(thread_key, config)
+        if stream_error:
+            print(f"[PDF] index stream ended with error: {stream_error}", flush=True)
         return result
     finally:
         if child is not None:
@@ -2262,33 +2332,142 @@ def _meta_extract_action(thread_key: str, meta: dict):
     return {"page_start": span[0], "page_end": span[1]}
 
 
-async def _index_pdf_document(thread_key: str, file_path: str, stored_path: str) -> dict:
-    first = await _consume_pdf_child(
-        thread_key, file_path, stored_path, "extract",
-        on_meta=lambda meta: _meta_extract_action(thread_key, meta),
-    )
-    window = first.get("reextract")
-    if not window:
-        return first
-    print(
-        f"[PDF] span extract pages={window['page_start']}-{window['page_end']}",
-        flush=True,
-    )
-    return await _consume_pdf_child(
-        thread_key, file_path, stored_path, "extract", payload=window,
-    )
+async def _index_pdf_document(
+    thread_key: str,
+    file_path: str,
+    stored_path: str,
+    config: RunnableConfig,
+) -> dict:
+    """Start one extract for this storage key, or join the one already running.
+
+    Returns when the outline and page count are stored. Page inserts and the
+    embedding warm-up keep running on `job.task`.
+    """
+    key = _pdf_job_key(stored_path or file_path)
+    async with _pdf_index_lock():
+        existing = _pdf_index_jobs.get(key)
+        if existing is not None and (existing.task is None or not existing.task.done()):
+            job = existing
+            mine = False
+        else:
+            job = _PdfIndexJob(
+                ready=asyncio.Event(),
+                storage_key=key,
+                thread_key=thread_key,
+            )
+            _pdf_index_jobs[key] = job
+            mine = True
+    if not mine:
+        print(f"[PDF] join in-progress index key={key}", flush=True)
+        await job.ready.wait()
+        snap = job.snapshot or _empty_pdf_result("pdf extract failed")
+        if job.thread_key != thread_key and int(snap.get("page_count") or 0) > 0:
+            _apply_pdf_result(thread_key, snap, file_path=file_path, reset_embeddings=True)
+        return snap
+
+    clear_thread_document_cache(thread_key)
+    generation = _doc_generation.get(thread_key, 0)
+    try:
+        await asyncio.to_thread(delete_remote_document, thread_key)
+    except Exception as exc:
+        print(f"[DOC LOADER] index reset failed: {exc}", flush=True)
+        failed = _empty_pdf_result("Could not reset the previous index.")
+        job.snapshot = failed
+        job.ready.set()
+        if _pdf_index_jobs.get(key) is job:
+            _pdf_index_jobs.pop(key, None)
+        return failed
+
+    async def _on_ready(snap: dict) -> None:
+        if (
+            int(snap.get("page_count") or 0) > 0
+            and _index_generation_current(thread_key, generation)
+        ):
+            _apply_pdf_result(thread_key, snap, file_path=file_path, reset_embeddings=True)
+            try:
+                await _persist_index_row(thread_key, stored_path, embed_complete=False)
+            except Exception as exc:
+                print(f"[DOC LOADER] outline persist failed: {exc}", flush=True)
+        job.snapshot = snap
+        if not job.ready.is_set():
+            job.ready.set()
+
+    async def _runner() -> None:
+        try:
+            result = await _consume_pdf_child(
+                thread_key,
+                file_path,
+                stored_path,
+                "extract",
+                on_meta=lambda meta: _meta_extract_action(thread_key, meta),
+                on_ready=_on_ready,
+                config=config,
+                generation=generation,
+            )
+            if not job.ready.is_set():
+                await _on_ready(result)
+            if (
+                _index_generation_current(thread_key, generation)
+                and int(result.get("page_count") or 0) > 0
+                and not result.get("has_text")
+            ):
+                try:
+                    await _persist_index_row(thread_key, stored_path, embed_complete=True)
+                except Exception as exc:
+                    print(f"[DOC LOADER] scan persist failed: {exc}", flush=True)
+        except Exception as exc:
+            from modal_client import public_modal_error
+            print(f"[PDF] background index failed: {exc!r}", flush=True)
+            if not job.ready.is_set():
+                job.snapshot = _empty_pdf_result(public_modal_error(exc))
+                job.ready.set()
+        finally:
+            if not job.ready.is_set():
+                job.snapshot = job.snapshot or _empty_pdf_result("pdf extract failed")
+                job.ready.set()
+            if _pdf_index_jobs.get(key) is job:
+                _pdf_index_jobs.pop(key, None)
+
+    try:
+        job.task = asyncio.create_task(_runner(), name=f"pdf-index:{key[:80]}")
+    except Exception as exc:
+        print(f"[PDF] could not start background index: {exc!r}", flush=True)
+        failed = _empty_pdf_result("Could not start the PDF index.")
+        job.snapshot = failed
+        job.ready.set()
+        if _pdf_index_jobs.get(key) is job:
+            _pdf_index_jobs.pop(key, None)
+        return failed
+    await job.ready.wait()
+    return job.snapshot or _empty_pdf_result("pdf extract failed")
 
 
-def _apply_pdf_result(thread_key: str, result: dict) -> None:
-    _pdf_page_counts[thread_key] = int(result["page_count"])
-    _scan_mode[thread_key] = not bool(result["has_text"])
-    _document_outlines[thread_key] = result["outline"]
-    _page_label_maps[thread_key] = result["labels"]
-    _page_label_reverse[thread_key] = result["reverse"]
-    _printed_page_offsets[thread_key] = result["offset"]
-    _indexed_chunks[thread_key] = []
+def _apply_pdf_result(
+    thread_key: str,
+    result: dict,
+    *,
+    file_path: str = "",
+    reset_embeddings: bool = True,
+) -> None:
+    _pdf_page_counts[thread_key] = int(result.get("page_count") or 0)
+    _scan_mode[thread_key] = not bool(result.get("has_text"))
+    _document_outlines[thread_key] = result.get("outline") or []
+    labels = result.get("labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
+    _page_label_maps[thread_key] = {int(k): v for k, v in labels.items()}
+    reverse = result.get("reverse") or {}
+    if not isinstance(reverse, dict) or not reverse:
+        reverse = {}
+        for page_index, label in _page_label_maps[thread_key].items():
+            reverse.setdefault(label, page_index)
+    _page_label_reverse[thread_key] = reverse
+    _printed_page_offsets[thread_key] = result.get("offset")
     _page_texts[thread_key] = []
-    _embeddings_ready[thread_key] = bool(result["has_text"]) and int(result["embedded"]) > 0
+    if file_path:
+        _indexed_file_paths[thread_key] = file_path
+    if reset_embeddings:
+        _embeddings_ready.setdefault(thread_key, False)
 
 
 async def _persist_index_row(thread_key: str, stored_path: str, *, embed_complete: bool) -> None:
@@ -2330,15 +2509,11 @@ async def _embed_plain_text(thread_key: str, stored_path: str, context: str) -> 
 async def process_and_index_documents(file_path: str, config: RunnableConfig) -> str:
     """
     Reads the document from file_path and prepares BOTH retrieval tiers,
-    scoped to the current conversation thread:
-      - Tier 2 (semantic fallback): splits the text into chunks, embeds
-        them, and stores them in a vector database (capped at
-        MAX_INDEXED_CHUNKS).
-      - Tier 1 (structural navigation): builds a page-indexed text cache
-        plus a chapter/section outline (`get_document_outline`), entirely
-        independent of the Tier 2 chunk cap — so chapters far past
-        MAX_INDEXED_CHUNKS remain reachable via `read_page_range`/
-        `locate_marker_in_range` even though they were never embedded.
+    scoped to the current conversation thread. For a PDF this returns as
+    soon as the page count and chapter outline are stored. The rest of the
+    page stream, and chunk embedding, continue in the background. Numbered
+    questions use Tier 1 immediately (`resolve_chapter_target` /
+    `locate_marker_in_range`). `search_in_document` waits for the embedding.
     Use this tool FIRST when a new file path is provided.
     """
     thread_key = _resolve_thread_key(config)
@@ -2403,9 +2578,11 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
 
     print("[TIMING] Tool Doc Indexing Started...", flush=True)
     t0 = time.time()
-    clear_thread_document_cache(thread_key)
 
     async def _drop_partial() -> None:
+        live = _pdf_index_jobs.get(_pdf_job_key(stored_path or file_path))
+        if live is not None and (live.task is None or not live.task.done()):
+            return
         try:
             await asyncio.to_thread(delete_remote_document, thread_key)
         except Exception as drop_exc:
@@ -2413,38 +2590,43 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
 
     partial_note = ""
     try:
-        await asyncio.to_thread(delete_remote_document, thread_key)
         ext = os.path.splitext(file_path)[1].lower()
         chunks = 0
         was_truncated = False
         if ext == ".pdf":
             set_pipeline_status(thread_key, PIPELINE_STATUS_INDEX)
-            result = await _index_pdf_document(thread_key, file_path, stored_path)
-            if result.get("clarify"):
-                return _ask_page_message(int(result.get("page_count") or 0))
+            result = await _index_pdf_document(thread_key, file_path, stored_path, config)
+            ask = _ask_if_bare_long_solve(thread_key)
+            if ask:
+                return ask
             if result.get("error") and int(result.get("page_count") or 0) <= 0:
                 return _index_error_message(str(result.get("error") or ""))
-            _apply_pdf_result(thread_key, result)
-            chunks = int(result["embedded"])
-            was_truncated = bool(result["was_truncated"])
             if result.get("error"):
                 partial_note = f" Some pages could not be read ({result['error']})."
                 print(f"[PDF] partial index kept: {result['error']}", flush=True)
-        else:
-            context, _page_texts_unused = await _load_document_text(file_path)
-            if context == CORRUPTED_DOCUMENT_MESSAGE:
-                return context
-            _pdf_page_counts[thread_key] = 0
-            _scan_mode[thread_key] = False
-            _document_outlines[thread_key] = []
-            _page_label_maps[thread_key] = {}
-            _page_label_reverse[thread_key] = {}
-            _printed_page_offsets[thread_key] = None
-            _page_texts[thread_key] = []
-            chunks, was_truncated = await _embed_plain_text(thread_key, stored_path, context)
-            _indexed_chunks[thread_key] = []
-            _embeddings_ready[thread_key] = chunks > 0
-            del context
+            return _index_ready_message(
+                thread_key,
+                skipped=False,
+                chunks=1 if result.get("has_text") else 0,
+                was_truncated=bool(result.get("was_truncated")),
+                embedded=False,
+            ) + partial_note
+        clear_thread_document_cache(thread_key)
+        await asyncio.to_thread(delete_remote_document, thread_key)
+        context, _page_texts_unused = await _load_document_text(file_path)
+        if context == CORRUPTED_DOCUMENT_MESSAGE:
+            return context
+        _pdf_page_counts[thread_key] = 0
+        _scan_mode[thread_key] = False
+        _document_outlines[thread_key] = []
+        _page_label_maps[thread_key] = {}
+        _page_label_reverse[thread_key] = {}
+        _printed_page_offsets[thread_key] = None
+        _page_texts[thread_key] = []
+        chunks, was_truncated = await _embed_plain_text(thread_key, stored_path, context)
+        _indexed_chunks[thread_key] = []
+        _embeddings_ready[thread_key] = chunks > 0
+        del context
         await _persist_index_row(thread_key, stored_path, embed_complete=True)
         _indexed_file_paths[thread_key] = file_path
         return _index_ready_message(
@@ -3490,6 +3672,10 @@ async def _embed_job_main(
         outcome = "timeout"
     if outcome == "ok" and _embed_job_is_current(thread_key, generation, user_id):
         _embeddings_ready[thread_key] = True
+        try:
+            await _persist_index_row(thread_key, stored_path, embed_complete=True)
+        except Exception as exc:
+            print(f"[DOC LOADER] embed persist failed: {exc}", flush=True)
     print(
         f"[EMBED] warm-up {outcome} thread={thread_key} chunks={len(chunks)} "
         f"took={time.time() - t0:.1f}s",
@@ -3595,7 +3781,41 @@ async def _embed_stored_chunks(thread_key: str, config: RunnableConfig) -> Optio
         return _EMBED_STALE_MESSAGE
     if _embed_job_is_current(thread_key, generation, user_id):
         _embeddings_ready[thread_key] = True
+        try:
+            await _persist_index_row(thread_key, stored_path, embed_complete=True)
+        except Exception as exc:
+            print(f"[DOC LOADER] embed persist failed: {exc}", flush=True)
     return None
+
+
+async def _await_pdf_index_task(thread_key: str, config: RunnableConfig) -> None:
+    """Block a vector search until the background extract has stored its chunks.
+
+    `asyncio.wait` leaves the extract running if this request is cancelled.
+    """
+    configurable = config.get("configurable") or {}
+    candidates = [
+        _indexed_file_paths.get(thread_key) or "",
+        str(configurable.get("document_path") or ""),
+    ]
+    indexed = candidates[0]
+    if indexed:
+        candidates.append(_storage_key(config, indexed))
+    seen: set[str] = set()
+    for path in candidates:
+        key = _pdf_job_key(path)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        job = _pdf_index_jobs.get(key)
+        if job is None:
+            continue
+        if job.task is None:
+            await job.ready.wait()
+        if job.task is not None and not job.task.done():
+            print(f"[PDF] search waiting for index key={key}", flush=True)
+            await asyncio.wait({job.task})
+        return
 
 
 @tool
@@ -3628,6 +3848,10 @@ async def search_in_document(query: str, config: RunnableConfig) -> str:
             "Nömrələnmiş məsələ üçün 'resolve_chapter_target' + 'locate_marker_in_range' çağır. "
             "search_in_document İSTİFADƏ ETMƏ."
         )
+    await _await_pdf_index_task(thread_key, config)
+    embed_error = await _embed_stored_chunks(thread_key, config)
+    if embed_error:
+        return embed_error
     print("[TIMING] Tool Doc Search Started...", flush=True)
     t0 = time.time()
     try:
