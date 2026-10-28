@@ -2418,6 +2418,7 @@ async def process_and_index_documents(file_path: str, config: RunnableConfig) ->
         chunks = 0
         was_truncated = False
         if ext == ".pdf":
+            set_pipeline_status(thread_key, PIPELINE_STATUS_INDEX)
             result = await _index_pdf_document(thread_key, file_path, stored_path)
             if result.get("clarify"):
                 return _ask_page_message(int(result.get("page_count") or 0))

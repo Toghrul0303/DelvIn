@@ -38,6 +38,8 @@ from tools import (
     cancel_embed_warmup,
     cancel_all_embed_jobs,
     get_pipeline_status,
+    PIPELINE_STATUS_INDEX,
+    set_pipeline_status,
     embedding_boot_status,
     index_struggle_memory,
     log_embedding_boot,
@@ -694,6 +696,11 @@ async def chat_stream_endpoint(
             # `math_tools_node`'s tool output) from ever leaking into the SSE
             # stream. `astream` (not `stream`) is required since every node in
             # the graph is a coroutine.
+            pdf_attached = bool((document_path or "").strip()) or temp_path.lower().endswith(".pdf")
+            if pdf_attached:
+                set_pipeline_status(thread_id, PIPELINE_STATUS_INDEX)
+                yield _sse_event(status=PIPELINE_STATUS_INDEX)
+
             try:
                 stream = agent_app.astream(
                     inputs, config=config, stream_mode=["messages", "updates"]
@@ -902,7 +909,14 @@ async def chat_stream_endpoint(
                 if temp_path and not _is_kept_upload(thread_id, temp_path):
                     _remove_temp_upload(temp_path)
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     except Exception as e:
         if temp_path and not _is_kept_upload(thread_id, temp_path):
