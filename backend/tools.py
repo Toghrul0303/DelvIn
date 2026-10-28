@@ -2137,6 +2137,10 @@ async def _consume_pdf_child(
     on_ready=None,
     config: Optional[RunnableConfig] = None,
     generation: Optional[int] = None,
+    queue_embed: bool = True,
+    insert_batch: Optional[int] = None,
+    skip_pages: Optional[set[int]] = None,
+    publish_navigation: bool = True,
 ) -> dict:
     """Read the child page by page. Insert pages and outline; queue embed text."""
     import gc
@@ -2174,6 +2178,8 @@ async def _consume_pdf_child(
     stream_error = ""
     early: Optional[dict] = None
     signaled = False
+    priority_span: Optional[dict] = None
+    batch_limit = insert_batch or _PAGE_INSERT_BATCH
     splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=200)
 
     def _pull():
@@ -2209,16 +2215,31 @@ async def _consume_pdf_child(
                         "has_text": has_text,
                         "toc": msg.get("toc") or [],
                     })
-                # Long books: hand the outline back now and keep streaming.
-                # A second question joins this job instead of opening Modal again.
+                # Long books: hand the outline back now. A named chapter stops
+                # this stream so the runner can extract that span before page 1.
                 if on_ready is not None and page_count > SHORT_DOC_MAX_PAGES and not signaled:
                     snap = _empty_pdf_result()
                     snap["page_count"] = page_count
                     snap["has_text"] = has_text
                     snap["outline"] = outline.finish() if outline else []
                     snap["clarify"] = action == "clarify"
+                    span = None
+                    if (
+                        has_text
+                        and isinstance(action, dict)
+                        and action.get("page_start")
+                        and action.get("page_end")
+                    ):
+                        span = {
+                            "page_start": int(action["page_start"]),
+                            "page_end": int(action["page_end"]),
+                        }
+                    snap["priority_span"] = span
                     await on_ready(snap)
                     signaled = True
+                    if span:
+                        priority_span = span
+                        break
                     continue
                 if action == "clarify":
                     early = _empty_pdf_result()
@@ -2243,15 +2264,20 @@ async def _consume_pdf_child(
                     outline.add_page(page_index, text)
                 if len(offset_sample) < 40:
                     offset_sample.append(text)
-                page_batch.append({
-                    "page_index": page_index,
-                    "content": text,
-                    "printed_label": label,
-                })
-                if len(page_batch) >= _PAGE_INSERT_BATCH:
+                if not (skip_pages and page_index in skip_pages):
+                    page_batch.append({
+                        "page_index": page_index,
+                        "content": text,
+                        "printed_label": label,
+                    })
+                if len(page_batch) >= batch_limit:
                     await asyncio.to_thread(
                         insert_document_pages, thread_key, stored_path, page_batch,
                     )
+                    _remember_pages(thread_key, {
+                        int(page["page_index"]): page.get("content") or ""
+                        for page in page_batch
+                    })
                     page_batch.clear()
                     gc.collect()
                 if has_text:
@@ -2267,6 +2293,10 @@ async def _consume_pdf_child(
             await asyncio.to_thread(
                 insert_document_pages, thread_key, stored_path, page_batch,
             )
+            _remember_pages(thread_key, {
+                int(page["page_index"]): page.get("content") or ""
+                for page in page_batch
+            })
             page_batch.clear()
         if has_text and buffer.strip():
             if len(chunks) < MAX_INDEXED_CHUNKS:
@@ -2299,11 +2329,12 @@ async def _consume_pdf_child(
             "error": stream_error,
             "clarify": False,
             "reextract": None,
+            "priority_span": priority_span,
         }
         if _index_generation_current(thread_key, generation):
-            if page_count > 0:
+            if publish_navigation and page_count > 0:
                 _apply_pdf_result(thread_key, result, file_path=file_path, reset_embeddings=False)
-            if has_text and chunks:
+            if queue_embed and has_text and chunks:
                 _indexed_chunks[thread_key] = list(chunks)
                 if config is not None:
                     start_embed_warmup(thread_key, config)
@@ -2406,6 +2437,44 @@ async def _index_pdf_document(
             )
             if not job.ready.is_set():
                 await _on_ready(result)
+            span = result.get("priority_span") if isinstance(result.get("priority_span"), dict) else None
+            if (
+                span
+                and result.get("has_text")
+                and _index_generation_current(thread_key, generation)
+                and int(result.get("page_count") or 0) > 0
+            ):
+                print(
+                    f"[PDF] span extract pages={span['page_start']}-{span['page_end']}",
+                    flush=True,
+                )
+                try:
+                    await _consume_pdf_child(
+                        thread_key,
+                        file_path,
+                        stored_path,
+                        "extract",
+                        payload=span,
+                        config=config,
+                        generation=generation,
+                        queue_embed=False,
+                        insert_batch=1,
+                        publish_navigation=False,
+                    )
+                except Exception as exc:
+                    print(f"[PDF] span extract failed: {exc!r}", flush=True)
+                if _index_generation_current(thread_key, generation):
+                    skip = set(range(int(span["page_start"]), int(span["page_end"]) + 1))
+                    print("[PDF] full extract after span", flush=True)
+                    await _consume_pdf_child(
+                        thread_key,
+                        file_path,
+                        stored_path,
+                        "extract",
+                        config=config,
+                        generation=generation,
+                        skip_pages=skip,
+                    )
             if (
                 _index_generation_current(thread_key, generation)
                 and int(result.get("page_count") or 0) > 0
@@ -3203,7 +3272,142 @@ async def _ocr_page_range(
     return [cache.get(page, "") for page in range(abs_start, end + 1)]
 
 
+LOCATE_POLL_SECONDS = 8.0
+LOCATE_POLL_INTERVAL = 0.4
+LOCATE_OCR_WINDOW = 4
 LOCATE_BLOB_MAX_CHARS = 80_000
+
+
+def _span_incomplete(pages: list[str]) -> bool:
+    return not pages or any(not (page or "").strip() for page in pages)
+
+
+async def _poll_pages_for_marker(
+    thread_key: str,
+    abs_start: int,
+    abs_end: int,
+    number: str,
+    kind_arg: str,
+) -> tuple[list[str], Optional[tuple[int, str]]]:
+    """Re-read pages the background extract is inserting. Stop at the first heading."""
+    pages: list[str] = []
+    deadline = time.monotonic() + LOCATE_POLL_SECONDS
+    while True:
+        pages = await load_page_span(thread_key, abs_start, abs_end)
+        hit = _find_marker_in_page_texts(pages, abs_start, number, True, kind_arg)
+        if hit is not None or not _span_incomplete(pages):
+            return pages, hit
+        if time.monotonic() >= deadline:
+            return pages, None
+        await asyncio.sleep(LOCATE_POLL_INTERVAL)
+
+
+async def _ocr_until_marker(
+    thread_key: str,
+    file_path: str,
+    abs_start: int,
+    abs_end: int,
+    number: str,
+    kind_arg: str,
+    seed_pages: Optional[list[str]] = None,
+) -> tuple[list[str], Optional[tuple[int, str]]]:
+    """OCR four pages at a time and close the stream when the heading appears."""
+    from modal_client import public_modal_error
+    from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
+
+    end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
+    width = end - abs_start + 1
+    pages = list(seed_pages or [])
+    if len(pages) < width:
+        pages.extend([""] * (width - len(pages)))
+    else:
+        pages = pages[:width]
+    cache = _ocr_page_cache.setdefault(thread_key, {})
+    for offset, text in enumerate(pages):
+        if (text or "").strip():
+            cache[abs_start + offset] = text
+
+    def _hit() -> Optional[tuple[int, str]]:
+        return _find_marker_in_page_texts(pages, abs_start, number, True, kind_arg)
+
+    found = _hit()
+    if found is not None:
+        return pages, found
+    auth = _thread_auth.get(thread_key)
+    if not auth:
+        return pages, None
+
+    page = abs_start
+    while page <= end:
+        window_end = min(page + LOCATE_OCR_WINDOW - 1, end)
+        for candidate in range(page, window_end + 1):
+            cached = cache.get(candidate)
+            if cached and not (pages[candidate - abs_start] or "").strip():
+                pages[candidate - abs_start] = cached
+        missing = [
+            candidate
+            for candidate in range(page, window_end + 1)
+            if not (pages[candidate - abs_start] or "").strip()
+        ]
+        found = _hit()
+        if found is not None:
+            return pages, found
+        if not missing:
+            page = window_end + 1
+            continue
+        print(
+            f"[VISION] OCR window pages={missing[0]}-{missing[-1]}",
+            flush=True,
+        )
+        try:
+            signed = sign_document_url(file_path, auth[1])
+        except Exception as exc:
+            print(f"[VISION] OCR sign failed: {public_modal_error(exc)}", flush=True)
+            return pages, _hit()
+        child = ModalPdfStream(
+            "ocr",
+            signed,
+            {"pages": missing, "dpi": FAST_OCR_DPI},
+            stall_seconds=SHORT_STALL_SECONDS,
+            budget_seconds=SHORT_BUDGET_SECONDS,
+            setup_seconds=SETUP_SECONDS,
+            fetch_seconds=FETCH_SECONDS,
+            storage_key=file_path,
+        )
+
+        def _pull():
+            try:
+                return next(child)
+            except StopIteration:
+                return None
+            except Exception as exc:
+                return {"kind": "error", "message": public_modal_error(exc)}
+
+        try:
+            while True:
+                msg = await asyncio.to_thread(_pull)
+                if msg is None:
+                    break
+                kind = msg.get("kind")
+                if kind == "error":
+                    print(f"[VISION] OCR child error: {msg.get('message')}", flush=True)
+                    break
+                if kind == "ocr":
+                    got = int(msg["page"])
+                    text = str(msg.get("text") or "")
+                    cache[got] = text
+                    slot = got - abs_start
+                    if 0 <= slot < len(pages):
+                        pages[slot] = text
+                    found = _hit()
+                    if found is not None:
+                        return pages, found
+                if kind == "done":
+                    break
+        finally:
+            child.close()
+        page = window_end + 1
+    return pages, _hit()
 
 
 async def _collect_span_pages(
@@ -3496,18 +3700,24 @@ async def locate_marker_in_range(
     file_path = _indexed_file_paths[thread_key]
     from vision_extract import FAST_OCR_MAX_PAGES
     span_end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
-    selected_pages = await load_page_span(thread_key, abs_start, span_end)
-    use_ocr = bool(
-        _scan_mode.get(thread_key) or _pages_are_sparse(selected_pages, 1, len(selected_pages))
-    )
+    use_ocr = bool(_scan_mode.get(thread_key))
     if use_ocr:
-        selected_pages = await _ocr_page_range(thread_key, file_path, abs_start, span_end)
+        selected_pages, hit = await _ocr_until_marker(
+            thread_key, file_path, abs_start, span_end, number, kind_arg,
+        )
+    else:
+        selected_pages, hit = await _poll_pages_for_marker(
+            thread_key, abs_start, span_end, number, kind_arg,
+        )
+        if hit is None and _span_incomplete(selected_pages):
+            print("[VISION] span text still missing; OCR windows", flush=True)
+            selected_pages, hit = await _ocr_until_marker(
+                thread_key, file_path, abs_start, span_end, number, kind_arg,
+                seed_pages=selected_pages,
+            )
+            use_ocr = True
     tagged = _build_tagged_chapter_blob(thread_key, selected_pages, abs_start)
     span_end = abs_start + len(selected_pages) - 1 if selected_pages else abs_end
-
-    hit = _find_marker_in_page_texts(
-        selected_pages, abs_start, number, True, kind_arg,
-    )
     if hit:
         print(
             f"[VISION] regex hit marker={number} kind={kind_arg} "
