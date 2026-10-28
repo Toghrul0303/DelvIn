@@ -2094,6 +2094,7 @@ async def _consume_pdf_child(
         budget_seconds=_PDF_EXTRACT_BUDGET_SECONDS,
         setup_seconds=_PDF_SETUP_SECONDS,
         fetch_seconds=_PDF_FETCH_SECONDS,
+        storage_key=file_path,
     )
     outline: Optional[_LiveOutline] = None
     page_count = 0

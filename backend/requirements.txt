@@ -17,5 +17,5 @@ httpx
 tavily-python
 docling
 sympy
-sentry-sdk
+sentry-sdk>=2.35.0
 polar-sdk

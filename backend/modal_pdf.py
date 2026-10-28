@@ -17,16 +17,18 @@ import json
 import queue
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 
 import modal
 from pydantic import BaseModel
 
 app = modal.App("locknlearn-pdf")
+_sentry_secret = modal.Secret.from_name("locknlearn-sentry")
 
 _parse_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("pymupdf", "pypdf", "fastapi[standard]")
+    .pip_install("pymupdf", "pypdf", "fastapi[standard]", "sentry-sdk>=2.35.0")
     .add_local_python_source("pdf_worker")
 )
 
@@ -46,6 +48,7 @@ _ocr_image = (
         "onnxruntime",
         "numpy",
         "fastapi[standard]",
+        "sentry-sdk>=2.35.0",
     )
     .run_function(_bake_rapidocr)
     .add_local_python_source("pdf_worker")
@@ -62,6 +65,48 @@ def _line(payload: dict) -> bytes:
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def _ensure_sentry() -> None:
+    """Initialize inside the container. Deploy-time import has no DSN."""
+    import sentry_sdk
+
+    if sentry_sdk.is_initialized():
+        return
+    dsn = (os.environ.get("SENTRY_DSN") or "").strip()
+    if not dsn:
+        return
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        release=os.environ.get("SENTRY_RELEASE"),
+        send_default_pii=False,
+        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        enable_logs=True,
+        include_local_variables=False,
+        max_request_body_size="never",
+    )
+
+
+def _report_download_error(exc: BaseException, url: str) -> None:
+    _ensure_sentry()
+    try:
+        import sentry_sdk
+
+        if not sentry_sdk.is_initialized():
+            return
+        parsed = urllib.parse.urlparse(url or "")
+        status = getattr(exc, "code", None)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_context("pdf_pipeline", {
+                "stage": "modal_download",
+                "signed_url_present": bool(url),
+                "signed_url_host": parsed.netloc,
+                "modal_status": status if isinstance(status, int) else 0,
+            })
+            scope.capture_exception(exc)
+    except Exception as capture_exc:
+        print(f"[PDF] sentry capture failed: {type(capture_exc).__name__}", flush=True)
+
+
 def _download(url: str) -> str:
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
@@ -73,7 +118,8 @@ def _download(url: str) -> str:
                 handle.write(chunk)
         handle.close()
         return handle.name
-    except Exception:
+    except Exception as exc:
+        _report_download_error(exc, url)
         handle.close()
         try:
             os.remove(handle.name)
@@ -107,6 +153,7 @@ def _run_job(path: str, job: str, payload: dict, hook) -> None:
 
 
 def _ndjson(job: str, url: str, payload: dict, allowed: set[str]):
+    _ensure_sentry()
     yield _line({"kind": "ready"})
     if job not in allowed:
         yield _line({"kind": "error", "message": f"unknown job {job}"})
@@ -133,6 +180,14 @@ def _ndjson(job: str, url: str, payload: dict, allowed: set[str]):
             try:
                 _run_job(path, job, payload or {}, hook)
             except Exception as exc:
+                _ensure_sentry()
+                try:
+                    import sentry_sdk
+
+                    if sentry_sdk.is_initialized():
+                        sentry_sdk.capture_exception(exc)
+                except Exception:
+                    pass
                 messages.put({
                     "kind": "error",
                     "message": f"{type(exc).__name__}: {exc}",
@@ -158,6 +213,7 @@ def _ndjson(job: str, url: str, payload: dict, allowed: set[str]):
 
 @app.function(
     image=_parse_image,
+    secrets=[_sentry_secret],
     cpu=1.0,
     memory=(2048, 4096),
     timeout=700,
@@ -176,6 +232,7 @@ def parse(job: PdfJob):
 
 @app.function(
     image=_ocr_image,
+    secrets=[_sentry_secret],
     cpu=2.0,
     memory=(4096, 8192),
     timeout=180,

@@ -48,14 +48,39 @@ import sentry_sdk
 
 load_dotenv(find_dotenv(".env"))
 
+def _sentry_before_send(event, hint):
+    """Keep the exception message. Drop frame locals and request bodies.
+
+    PDF signing puts the signed URL in a local, and that must not ride along
+    with the httpx error captured for Sentry.
+    """
+    exceptions = (event.get("exception") or {}).get("values") or []
+    for entry in exceptions:
+        frames = ((entry.get("stacktrace") or {}).get("frames")) or []
+        for frame in frames:
+            frame.pop("vars", None)
+    request = event.get("request")
+    if isinstance(request, dict):
+        request.pop("data", None)
+        request.pop("cookies", None)
+        headers = request.get("headers")
+        if isinstance(headers, dict):
+            for name in list(headers):
+                if name.lower() in {"authorization", "modal-key", "modal-secret", "apikey", "cookie"}:
+                    headers.pop(name, None)
+    return event
+
+
 sentry_sdk.init(
     dsn=os.environ.get("SENTRY_DSN"),
     environment=os.environ.get("SENTRY_ENVIRONMENT", "development"),
     release=os.environ.get("SENTRY_RELEASE"),
     send_default_pii=False,
-    traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0")),
+    traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
     enable_logs=True,
+    include_local_variables=False,
     max_request_body_size="never",
+    before_send=_sentry_before_send,
 )
 
 

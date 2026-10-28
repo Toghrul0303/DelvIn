@@ -24,8 +24,73 @@ SHORT_BUDGET_SECONDS = 180
 _URL_IN_ERROR = re.compile(r"https?://\S+")
 
 
+def _url_host(url: str) -> str:
+    try:
+        return urllib.parse.urlparse(url or "").netloc
+    except Exception:
+        return ""
+
+
+def record_pdf_pipeline(**fields) -> None:
+    """One structured PDF event. Attributes only: no signed URL or token."""
+    attributes: dict[str, str | int | float | bool] = {}
+    for key, value in fields.items():
+        if isinstance(value, bool):
+            attributes[key] = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            attributes[key] = value
+        elif value is None or value == "":
+            continue
+        else:
+            attributes[key] = str(value)[:200]
+    detail = " ".join(f"{key}={attributes[key]}" for key in attributes)
+    print(f"[PDF] pipeline {detail}", flush=True)
+    try:
+        import sentry_sdk
+
+        if not sentry_sdk.is_initialized():
+            return
+        status = attributes.get("modal_status")
+        sign_status = attributes.get("sign_status")
+        failed = (
+            isinstance(status, int) and (status == 0 or status >= 400)
+        ) or (
+            isinstance(sign_status, int) and sign_status >= 400
+        ) or attributes.get("signed_url_present") is False
+        log = sentry_sdk.logger.error if failed else sentry_sdk.logger.info
+        log("PDF pipeline", attributes=attributes)
+    except Exception as exc:
+        print(f"[PDF] pipeline log failed: {type(exc).__name__}", flush=True)
+
+
+def _capture_full_http_error(exc: BaseException) -> None:
+    """Send the original httpx error to Sentry before chat text drops the URL."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        return
+    try:
+        import sentry_sdk
+
+        if not sentry_sdk.is_initialized():
+            return
+        request = getattr(exc, "request", None)
+        url = str(getattr(request, "url", "") or "")
+        with sentry_sdk.new_scope() as scope:
+            scope.set_context("pdf_pipeline", {
+                "stage": "modal_post",
+                "modal_status": status,
+                "modal_host": _url_host(url),
+                "request_url": url,
+            })
+            scope.capture_exception(exc)
+    except Exception as capture_exc:
+        print(f"[PDF] sentry capture failed: {type(capture_exc).__name__}", flush=True)
+
+
 def public_modal_error(exc: BaseException) -> str:
     """Exception text safe to show in chat. No signed URL."""
+    _capture_full_http_error(exc)
     text = _URL_IN_ERROR.sub("", str(exc))
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > 160:
@@ -72,20 +137,43 @@ def sign_document_url(object_key: str, access_token: str, expires_in: int = 900)
         with urllib.request.urlopen(request, timeout=30) as response:
             body = json.loads(response.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
+        record_pdf_pipeline(
+            stage="sign",
+            storage_key=object_key,
+            signed_url_present=False,
+            sign_status=exc.code,
+        )
         raise RuntimeError(f"document sign failed: {exc.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        record_pdf_pipeline(
+            stage="sign",
+            storage_key=object_key,
+            signed_url_present=False,
+        )
         raise RuntimeError(f"document sign failed: {type(exc).__name__}") from None
     signed = ""
     if isinstance(body, dict):
         signed = str(body.get("signedURL") or body.get("signedUrl") or "")
     if not signed:
+        record_pdf_pipeline(
+            stage="sign",
+            storage_key=object_key,
+            signed_url_present=False,
+        )
         raise RuntimeError("document sign failed: empty url")
     if signed.startswith("http://") or signed.startswith("https://"):
-        return signed
-    if not signed.startswith("/"):
-        signed = "/" + signed
-    print(f"[PDF] signed storage object expires={expires_in}s", flush=True)
-    return f"{base}/storage/v1{signed}"
+        final_url = signed
+    else:
+        if not signed.startswith("/"):
+            signed = "/" + signed
+        final_url = f"{base}/storage/v1{signed}"
+    record_pdf_pipeline(
+        stage="sign",
+        storage_key=object_key,
+        signed_url_present=True,
+        signed_url_host=_url_host(final_url),
+    )
+    return final_url
 
 
 def _endpoint(job: str) -> str:
@@ -160,9 +248,11 @@ class ModalPdfStream:
         budget_seconds: float = EXTRACT_BUDGET_SECONDS,
         setup_seconds: float = SETUP_SECONDS,
         fetch_seconds: float = FETCH_SECONDS,
+        storage_key: str = "",
     ) -> None:
         self.job = job
         self.signed_url = signed_url
+        self.storage_key = storage_key
         self.payload = payload or {}
         self.stall_seconds = stall_seconds
         self.budget_seconds = budget_seconds
@@ -268,19 +358,30 @@ class ModalPdfStream:
             pool=self.setup_seconds,
         )
         body = {"job": self.job, "url": self.signed_url, "payload": self.payload}
+        modal_url = _endpoint(self.job)
+        posted = False
         try:
             client = httpx.Client(timeout=timeout)
             with self._http_lock:
                 self._client = client
             with client.stream(
                 "POST",
-                _endpoint(self.job),
+                modal_url,
                 json=body,
                 headers=_auth_headers(),
             ) as response:
                 with self._http_lock:
                     self._response = response
                 response.raise_for_status()
+                posted = True
+                record_pdf_pipeline(
+                    stage="modal_post",
+                    storage_key=self.storage_key,
+                    signed_url_present=bool(self.signed_url),
+                    modal_status=response.status_code,
+                    modal_host=_url_host(modal_url),
+                    job=self.job,
+                )
                 for line in response.iter_lines():
                     if self._fail:
                         break
@@ -297,6 +398,16 @@ class ModalPdfStream:
             if failed:
                 yield {"kind": "error", "message": failed}
         except Exception as exc:
+            if not posted:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                record_pdf_pipeline(
+                    stage="modal_post",
+                    storage_key=self.storage_key,
+                    signed_url_present=bool(self.signed_url),
+                    modal_status=status if isinstance(status, int) else 0,
+                    modal_host=_url_host(modal_url),
+                    job=self.job,
+                )
             failed = self._failure_message()
             yield {"kind": "error", "message": failed or public_modal_error(exc)}
         finally:
@@ -324,6 +435,7 @@ def collect_remote_messages(
         budget_seconds=budget_seconds,
         setup_seconds=setup_seconds,
         fetch_seconds=fetch_seconds,
+        storage_key=storage_key,
     )
     messages: list = []
     try:
