@@ -1309,9 +1309,23 @@ def _looks_like_coach_speak(text: str) -> bool:
     )
 
 
+_SOLUTION_HEADING_RE = re.compile(
+    r"#{1,3}\s+(?:Key concepts|Solution|The physics)\b",
+    re.IGNORECASE,
+)
+
+
+def _cut_solution_heading(text: str) -> str:
+    """Drop a model-written solution that was appended to the problem stem."""
+    match = _SOLUTION_HEADING_RE.search(text or "")
+    if not match:
+        return text or ""
+    return (text or "")[:match.start()].strip()
+
+
 def _isolate_problem_stem(text: str) -> str:
     """Keep the PDF stem; drop RAG `---` coach segments and trailing coaching."""
-    body = (text or "").strip()
+    body = _cut_solution_heading((text or "").strip())
     if not body:
         return ""
     kept_segments = []

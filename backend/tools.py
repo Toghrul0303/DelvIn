@@ -1631,7 +1631,13 @@ def lookup_outline_chapter(config: RunnableConfig, printed_page: Optional[int]) 
     if not outline or not total_pages:
         return None
 
-    absolute = _printed_to_absolute_page(thread_key, page_num, total_pages)
+    stored = _resolved_targets.get(thread_key) or {}
+    if page_num == stored.get("printed_start") and stored.get("page_start"):
+        absolute = int(stored["page_start"])
+    elif page_num == stored.get("printed_end") and stored.get("page_end"):
+        absolute = int(stored["page_end"])
+    else:
+        absolute = _printed_to_absolute_page(thread_key, page_num, total_pages)
     matches = [
         entry for entry in outline
         if entry.get("page_start", 0) <= absolute <= entry.get("page_end", entry.get("page_start", 0))
@@ -3274,7 +3280,7 @@ async def _ocr_page_range(
 
 LOCATE_POLL_SECONDS = 8.0
 LOCATE_POLL_INTERVAL = 0.4
-LOCATE_OCR_WINDOW = 4
+LOCATE_OCR_WINDOW = 15
 LOCATE_BLOB_MAX_CHARS = 80_000
 
 
@@ -3311,7 +3317,7 @@ async def _ocr_until_marker(
     kind_arg: str,
     seed_pages: Optional[list[str]] = None,
 ) -> tuple[list[str], Optional[tuple[int, str]]]:
-    """OCR four pages at a time and close the stream when the heading appears."""
+    """OCR up to 15 missing pages per download. Close the stream on the first heading."""
     from modal_client import public_modal_error
     from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
@@ -3685,8 +3691,18 @@ async def locate_marker_in_range(
         )
 
     printed_start_requested, printed_end_requested = start_page, end_page
-    abs_start = _printed_to_absolute_page(thread_key, start_page, total_pages)
-    abs_end = _printed_to_absolute_page(thread_key, end_page, total_pages)
+    stored_target = _resolved_targets.get(thread_key) or {}
+    if (
+        start_page == stored_target.get("printed_start")
+        and end_page == stored_target.get("printed_end")
+        and stored_target.get("page_start")
+        and stored_target.get("page_end")
+    ):
+        abs_start = int(stored_target["page_start"])
+        abs_end = int(stored_target["page_end"])
+    else:
+        abs_start = _printed_to_absolute_page(thread_key, start_page, total_pages)
+        abs_end = _printed_to_absolute_page(thread_key, end_page, total_pages)
     abs_start = max(1, abs_start)
     abs_end = min(abs_end, total_pages)
     if abs_end < abs_start:
