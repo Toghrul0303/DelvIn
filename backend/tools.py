@@ -3262,7 +3262,7 @@ async def _ocr_page_range(
                 file_path,
                 token,
                 {"pages": missing, "dpi": FAST_OCR_DPI},
-                SHORT_STALL_SECONDS,
+                OCR_MAP_STALL_SECONDS,
                 SHORT_BUDGET_SECONDS,
                 SETUP_SECONDS,
                 FETCH_SECONDS,
@@ -3281,6 +3281,8 @@ async def _ocr_page_range(
 LOCATE_POLL_SECONDS = 8.0
 LOCATE_POLL_INTERVAL = 0.4
 LOCATE_OCR_WINDOW = 15
+# Ordered map output waits on one slow page. 20s was the old one-page gap.
+OCR_MAP_STALL_SECONDS = 60
 LOCATE_BLOB_MAX_CHARS = 80_000
 
 
@@ -3374,7 +3376,7 @@ async def _ocr_until_marker(
             "ocr",
             signed,
             {"pages": missing, "dpi": FAST_OCR_DPI},
-            stall_seconds=SHORT_STALL_SECONDS,
+            stall_seconds=OCR_MAP_STALL_SECONDS,
             budget_seconds=SHORT_BUDGET_SECONDS,
             setup_seconds=SETUP_SECONDS,
             fetch_seconds=FETCH_SECONDS,
@@ -3411,6 +3413,7 @@ async def _ocr_until_marker(
                 if kind == "done":
                     break
         finally:
+            # Closing the response closes the Modal generator, which stops the map.
             child.close()
         page = window_end + 1
     return pages, _hit()
