@@ -316,6 +316,19 @@ mjx-container svg {
 .board-step-math p:has(> mjx-container[display="true"]:only-child) > mjx-container {
   padding-right: 0;
 }
+.dark .board-step-math p:has(> mjx-container:only-child) > mjx-container,
+.dark .board-node mjx-container[display="true"] {
+  color: #f8fafc;
+}
+
+/* Prose sits outside MathJax, so a hardcoded slate color stays near-black on
+   dark cards. Pin the words to the card foreground; leave formulas alone. */
+.dark .board-node [data-highlight-source],
+.dark .board-step-math,
+.dark .board-node [data-highlight-source] :where(p, li, strong, em, ul, ol, span:not(.math-inline)),
+.dark .board-step-math :where(p, li, strong, em, ul, ol) {
+  color: var(--card-foreground);
+}
 
 .board-branch-shell {
   box-sizing: border-box;

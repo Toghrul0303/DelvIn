@@ -416,7 +416,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
                 data-highlight-source=""
                 data-shape-id={shape.id}
                 className={cn(
-                  "min-w-0 text-[15px] leading-7 text-pretty text-slate-800",
+                  "min-w-0 text-[15px] leading-7 text-pretty text-card-foreground",
                   showInlineFigures && "flex-1",
                 )}
                 onPointerDown={onMathPointerDown}
@@ -500,13 +500,13 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
         <div
           data-highlight-source=""
           data-shape-id={shape.id}
-          className="flex gap-2.5 text-sm leading-7 text-slate-800"
+          className="flex gap-2.5 text-sm leading-7 text-card-foreground"
           onPointerDown={onMathPointerDown}
         >
           <span className="w-4 shrink-0 pt-0.5 text-[11px] font-medium tabular-nums text-muted-foreground/70">
             {shape.props.index + 1}
           </span>
-          <BoardRichText text={shape.props.latex} block className="min-w-0 text-pretty text-slate-800 leading-7" />
+          <BoardRichText text={shape.props.latex} block className="min-w-0 text-pretty text-card-foreground leading-7" />
         </div>
         {hasLateral ? (
           <div className="flex items-center gap-1 pl-6">
@@ -557,7 +557,7 @@ function ResultBody({ shape }: { shape: IBoardResultShape }) {
         {shape.props.summary ? (
           <BoardRichText
             text={shape.props.summary}
-            className="text-sm font-semibold leading-relaxed text-pretty text-slate-800"
+            className="text-sm font-semibold leading-relaxed text-pretty text-card-foreground"
           />
         ) : null}
       </div>
