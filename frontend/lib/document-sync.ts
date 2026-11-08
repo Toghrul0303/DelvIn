@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/client"
+import { getSupabasePublicEnv } from "@/lib/supabase/env"
 
 export const DOCUMENTS_BUCKET = "documents"
 
@@ -8,22 +8,50 @@ export function documentObjectPath(userId: string, threadId: string, fileName: s
   return `${userId}/${threadId}/${safe}`
 }
 
+function storageObjectUrl(baseUrl: string, objectPath: string) {
+  const encoded = objectPath.split("/").map((segment) => encodeURIComponent(segment)).join("/")
+  return `${baseUrl.replace(/\/+$/, "")}/storage/v1/object/${DOCUMENTS_BUCKET}/${encoded}`
+}
+
 export async function uploadSessionPdf(options: {
   userId: string
   threadId: string
   file: File
   accessToken: string
+  onProgress?: (percent: number) => void
 }): Promise<string | null> {
-  const supabase = createClient()
-  if (!supabase || !options.accessToken) return null
+  const env = getSupabasePublicEnv()
+  if (!env || !options.accessToken) return null
   const objectPath = documentObjectPath(options.userId, options.threadId, options.file.name)
-  const { error } = await supabase.storage.from(DOCUMENTS_BUCKET).upload(objectPath, options.file, {
-    upsert: true,
-    contentType: options.file.type || "application/pdf",
-  })
-  if (error) {
-    console.error("[Documents] Upload failed", error.message)
+  const contentType = options.file.type || "application/pdf"
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", storageObjectUrl(env.url, objectPath))
+      xhr.setRequestHeader("Authorization", `Bearer ${options.accessToken}`)
+      xhr.setRequestHeader("apikey", env.anonKey)
+      xhr.setRequestHeader("Content-Type", contentType)
+      xhr.setRequestHeader("cache-control", "max-age=3600")
+      xhr.setRequestHeader("x-upsert", "true")
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return
+        options.onProgress?.(Math.floor((event.loaded / event.total) * 100))
+      }
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          resolve()
+          return
+        }
+        reject(new Error(`storage upload failed: ${xhr.status}`))
+      }
+      xhr.onerror = () => reject(new Error("storage upload failed: network"))
+      xhr.onabort = () => reject(new Error("storage upload aborted"))
+      xhr.send(options.file)
+    })
+    return objectPath
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "storage upload failed"
+    console.error("[Documents] Upload failed", message)
     return null
   }
-  return objectPath
 }

@@ -631,6 +631,20 @@ type PdfUploadTask = {
   phase: PdfUploadPhase
 }
 
+function pdfUploadBlocking(
+  file: File | null,
+  threadId: string,
+  phase: PdfUploadPhase | null,
+  keyShown: string | null,
+) {
+  return Boolean(
+    file &&
+      isPdfFile(file) &&
+      phase === "uploading" &&
+      keyShown === pdfUploadKey(threadId, file),
+  )
+}
+
 function buildHighlightAskPrompt(quoted: string, source: "chat" | "desk"): string {
   const followup =
     "Explain this specific part. Do not restate the whole solution."
@@ -763,6 +777,7 @@ export function ChatPane({
   const pdfUploadRef = useRef<PdfUploadTask | null>(null)
   const [pdfUploadKeyShown, setPdfUploadKeyShown] = useState<string | null>(null)
   const [pdfUploadPhase, setPdfUploadPhase] = useState<PdfUploadPhase | null>(null)
+  const [pdfUploadPercent, setPdfUploadPercent] = useState(0)
 
   const storeDocumentPath = (thread: string, path: string) => {
     if (threadIdRef.current === thread) documentPathRef.current = path
@@ -774,6 +789,7 @@ export function ChatPane({
     pdfUploadRef.current = null
     setPdfUploadKeyShown(null)
     setPdfUploadPhase(null)
+    setPdfUploadPercent(0)
   }
 
   const beginPdfUpload = (file: File): Promise<string | null> => {
@@ -783,14 +799,30 @@ export function ChatPane({
     if (existing && existing.key === key && existing.phase !== "failed") return existing.promise
     const userId = userIdRef.current
     const accessToken = accessTokenRef.current
+    const task: PdfUploadTask = {
+      key,
+      threadId: thread,
+      promise: Promise.resolve(null),
+      phase: "uploading",
+    }
     const promise = (async () => {
       if (!userId || !accessToken) return null
-      return uploadSessionPdf({ userId, threadId: thread, file, accessToken })
+      return uploadSessionPdf({
+        userId,
+        threadId: thread,
+        file,
+        accessToken,
+        onProgress: (percent) => {
+          if (pdfUploadRef.current !== task || threadIdRef.current !== thread) return
+          setPdfUploadPercent(percent)
+        },
+      })
     })()
-    const task: PdfUploadTask = { key, threadId: thread, promise, phase: "uploading" }
+    task.promise = promise
     pdfUploadRef.current = task
     setPdfUploadKeyShown(key)
     setPdfUploadPhase("uploading")
+    setPdfUploadPercent(0)
     void promise.then((uploaded) => {
       if (pdfUploadRef.current !== task || threadIdRef.current !== thread) return
       if (!uploaded) {
@@ -1251,7 +1283,7 @@ export function ChatPane({
         const key = pdfUploadKey(threadId, fileToSend)
         const existing = pdfUploadRef.current
         const alreadyReady = existing?.key === key && existing.phase === "ready"
-        if (!alreadyReady) setPipelineStatus(t("chat.uploadingDocument"))
+        if (!alreadyReady) setPipelineStatus(t("chat.uploadingDocument", { percent: 0 }))
         const uploaded = await beginPdfUpload(fileToSend)
         if (!uploaded) {
           throw new Error("PDF upload failed")
@@ -1591,6 +1623,7 @@ export function ChatPane({
     const text = input.trim()
     const composerFile = attachedFile
     if (isSending) return
+    if (pdfUploadBlocking(composerFile, threadId, pdfUploadPhase, pdfUploadKeyShown)) return
 
     // Empty composer + a newly queued file: local intent chips, no API call.
     if (!text && composerFile) {
@@ -2004,7 +2037,7 @@ export function ChatPane({
               statusLabel={
                 isPdfFile(attachedFile) && pdfUploadKeyShown === pdfUploadKey(threadId, attachedFile)
                   ? pdfUploadPhase === "uploading"
-                    ? t("chat.uploadingDocument")
+                    ? t("chat.uploadingDocument", { percent: pdfUploadPercent })
                     : pdfUploadPhase === "failed"
                       ? t("chat.uploadFailed")
                       : undefined
@@ -2137,7 +2170,11 @@ export function ChatPane({
           <button
             type="button"
             onClick={isSending ? stopGeneration : send}
-            disabled={!isSending && !input.trim() && !attachedFile}
+            disabled={
+              !isSending &&
+              ((!input.trim() && !attachedFile) ||
+                pdfUploadBlocking(attachedFile, threadId, pdfUploadPhase, pdfUploadKeyShown))
+            }
             aria-label={isSending ? t("chat.stop") : t("chat.send")}
             className="bg-brand-gradient grid size-9 shrink-0 self-start place-items-center rounded-xl text-white transition-all hover:-translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
           >
