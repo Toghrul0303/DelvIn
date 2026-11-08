@@ -614,6 +614,23 @@ function writeStoredDocumentPath(threadId: string, path: string) {
   }
 }
 
+function isPdfFile(file: File) {
+  return /pdf/i.test(file.type || file.name)
+}
+
+function pdfUploadKey(threadId: string, file: File) {
+  return `${threadId}:${file.name}:${file.size}:${file.lastModified}`
+}
+
+type PdfUploadPhase = "uploading" | "ready" | "failed"
+
+type PdfUploadTask = {
+  key: string
+  threadId: string
+  promise: Promise<string | null>
+  phase: PdfUploadPhase
+}
+
 function buildHighlightAskPrompt(quoted: string, source: "chat" | "desk"): string {
   const followup =
     "Explain this specific part. Do not restate the whole solution."
@@ -735,6 +752,58 @@ export function ChatPane({
     ]
   }, [t])
   const { user, session: authSession } = useAuth()
+  const threadIdRef = useRef(threadId)
+  threadIdRef.current = threadId
+  const patchSessionRef = useRef(patchSession)
+  patchSessionRef.current = patchSession
+  const userIdRef = useRef(user?.id)
+  userIdRef.current = user?.id
+  const accessTokenRef = useRef(authSession?.access_token)
+  accessTokenRef.current = authSession?.access_token
+  const pdfUploadRef = useRef<PdfUploadTask | null>(null)
+  const [pdfUploadKeyShown, setPdfUploadKeyShown] = useState<string | null>(null)
+  const [pdfUploadPhase, setPdfUploadPhase] = useState<PdfUploadPhase | null>(null)
+
+  const storeDocumentPath = (thread: string, path: string) => {
+    if (threadIdRef.current === thread) documentPathRef.current = path
+    writeStoredDocumentPath(thread, path)
+    patchSessionRef.current(thread, { documentPath: path })
+  }
+
+  const discardPdfUpload = () => {
+    pdfUploadRef.current = null
+    setPdfUploadKeyShown(null)
+    setPdfUploadPhase(null)
+  }
+
+  const beginPdfUpload = (file: File): Promise<string | null> => {
+    const thread = threadIdRef.current
+    const key = pdfUploadKey(thread, file)
+    const existing = pdfUploadRef.current
+    if (existing && existing.key === key && existing.phase !== "failed") return existing.promise
+    const userId = userIdRef.current
+    const accessToken = accessTokenRef.current
+    const promise = (async () => {
+      if (!userId || !accessToken) return null
+      return uploadSessionPdf({ userId, threadId: thread, file, accessToken })
+    })()
+    const task: PdfUploadTask = { key, threadId: thread, promise, phase: "uploading" }
+    pdfUploadRef.current = task
+    setPdfUploadKeyShown(key)
+    setPdfUploadPhase("uploading")
+    void promise.then((uploaded) => {
+      if (pdfUploadRef.current !== task || threadIdRef.current !== thread) return
+      if (!uploaded) {
+        task.phase = "failed"
+        setPdfUploadPhase("failed")
+        return
+      }
+      storeDocumentPath(thread, uploaded)
+      task.phase = "ready"
+      setPdfUploadPhase("ready")
+    })
+    return promise
+  }
   const { saveFormula, renameFormula, saveGraph, saveStruggle } = useMemoryBox()
   const prevThreadId = useRef(threadId)
   const getSessionRef = useRef(getSession)
@@ -801,6 +870,7 @@ export function ChatPane({
       setHighlightAsk(null)
       pendingFileRef.current = null
       setPendingFileBound(false)
+      discardPdfUpload()
       setPendingSelect(null)
       setTemplatesOpen(false)
     }
@@ -827,6 +897,7 @@ export function ChatPane({
         : new File([file], `screenshot.${ext}`, { type })
     pendingFileRef.current = null
     setPendingFileBound(false)
+    discardPdfUpload()
     setAttachedFile(named)
   }
 
@@ -1147,11 +1218,7 @@ export function ChatPane({
     cancelHighlightDismiss()
     setHighlightAsk(null)
     setIsSending(true)
-    setPipelineStatus(
-      fileToSend && /pdf/i.test(fileToSend.type || fileToSend.name)
-        ? "Indexing document (the first open of a textbook can take a few minutes)..."
-        : "",
-    )
+    setPipelineStatus("")
     streamingAiIdRef.current = aiMessageId
     window.getSelection()?.removeAllRanges()
     clearMathSelectionPaint()
@@ -1174,25 +1241,23 @@ export function ChatPane({
         documentPathRef.current = rememberedPath
         writeStoredDocumentPath(threadId, rememberedPath)
       }
-      const isPdf = Boolean(fileToSend && /pdf/i.test(fileToSend.type || fileToSend.name))
+      const isPdf = Boolean(fileToSend && isPdfFile(fileToSend))
       let savedDocumentPath = rememberedPath || undefined
       let outboundDocument: File | null = fileToSend
       if (isPdf && fileToSend) {
         if (!user || !accessToken) {
           throw new Error("PDF upload requires a signed-in session")
         }
-        const uploaded = await uploadSessionPdf({
-          userId: user.id,
-          threadId,
-          file: fileToSend,
-          accessToken,
-        })
+        const key = pdfUploadKey(threadId, fileToSend)
+        const existing = pdfUploadRef.current
+        const alreadyReady = existing?.key === key && existing.phase === "ready"
+        if (!alreadyReady) setPipelineStatus(t("chat.uploadingDocument"))
+        const uploaded = await beginPdfUpload(fileToSend)
         if (!uploaded) {
           throw new Error("PDF upload failed")
         }
-        documentPathRef.current = uploaded
-        writeStoredDocumentPath(threadId, uploaded)
-        patchSession(threadId, { documentPath: uploaded })
+        storeDocumentPath(threadId, uploaded)
+        if (!turnStatusClosed) setPipelineStatus("")
         savedDocumentPath = uploaded
         outboundDocument = null
       }
@@ -1936,7 +2001,19 @@ export function ChatPane({
             <PendingFileChip
               file={attachedFile}
               disabled={isSending}
-              onRemove={() => setAttachedFile(null)}
+              statusLabel={
+                isPdfFile(attachedFile) && pdfUploadKeyShown === pdfUploadKey(threadId, attachedFile)
+                  ? pdfUploadPhase === "uploading"
+                    ? t("chat.uploadingDocument")
+                    : pdfUploadPhase === "failed"
+                      ? t("chat.uploadFailed")
+                      : undefined
+                  : undefined
+              }
+              onRemove={() => {
+                discardPdfUpload()
+                setAttachedFile(null)
+              }}
             />
           </div>
         )}
@@ -1958,7 +2035,11 @@ export function ChatPane({
               setPendingFileBound(false)
               if (file.type.startsWith("image/")) {
                 attachImageFile(file)
+              } else if (isPdfFile(file)) {
+                setAttachedFile(file)
+                beginPdfUpload(file)
               } else {
+                discardPdfUpload()
                 setAttachedFile(file)
               }
               e.target.value = ""
