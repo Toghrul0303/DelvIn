@@ -28,7 +28,7 @@ export type IDeskCalculatorShape = TLShape<"desk-calculator">
 
 /** Natural size of `CalculatorKeypad` (fixed 220px card) plus the grip strip. */
 const CALC_W = 220
-const CALC_H = 360
+const CALC_H = 406
 const GRIP_H = 24
 
 export function isDeskCalculatorShape(shape: { type: string }): shape is IDeskCalculatorShape {

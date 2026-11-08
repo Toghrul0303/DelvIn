@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { useLanguage } from "./language-context"
 
 const KEYS = [
+  ["(", ")", "√", "^"],
   ["C", "⌫", "%", "÷"],
   ["7", "8", "9", "×"],
   ["4", "5", "6", "−"],
@@ -18,7 +19,7 @@ function toEvalExpr(expr: string) {
 }
 
 function evaluate(expr: string): string {
-  const sanitized = toEvalExpr(expr).replace(/[^0-9.+\-*/%() ]/g, "")
+  const sanitized = toEvalExpr(expr).replace(/[^0-9.+\-*/%()^√ ]/g, "")
   if (!sanitized.trim()) return "0"
   try {
     const result = evalArithmetic(sanitized)
@@ -29,9 +30,9 @@ function evaluate(expr: string): string {
   }
 }
 
-/** Basic + − × ÷ % parser — no eval / Function. */
+/** + − × ÷ % ^ √ parser — no eval / Function. Brackets group. ^ is right-associative. */
 function evalArithmetic(input: string): number {
-  const tokens = input.match(/\d+\.\d+|\d+\.|\.\d+|\d+|[+\-*/%()]/g)
+  const tokens = input.match(/\d+\.\d+|\d+\.|\.\d+|\d+|[+\-*/%()^√]/g)
   if (!tokens) throw new Error("empty")
   let i = 0
   const peek = () => tokens[i]
@@ -51,15 +52,21 @@ function evalArithmetic(input: string): number {
     return value
   }
   const parseTerm = (): number => {
-    let value = parseFactor()
+    let value = parsePower()
     while (peek() === "*" || peek() === "/" || peek() === "%") {
       const op = eat()
-      const rhs = parseFactor()
+      const rhs = parsePower()
       if (op === "*") value *= rhs
       else if (op === "/") value /= rhs
       else value %= rhs
     }
     return value
+  }
+  const parsePower = (): number => {
+    const base = parseFactor()
+    if (peek() !== "^") return base
+    eat("^")
+    return Math.pow(base, parsePower())
   }
   const parseFactor = (): number => {
     if (peek() === "+") {
@@ -69,6 +76,10 @@ function evalArithmetic(input: string): number {
     if (peek() === "-") {
       eat()
       return -parseFactor()
+    }
+    if (peek() === "√") {
+      eat()
+      return Math.sqrt(parseFactor())
     }
     if (peek() === "(") {
       eat("(")
@@ -114,7 +125,7 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
       })
       return
     }
-    const isOp = ["÷", "×", "−", "+", "%"].includes(key)
+    const isOp = ["÷", "×", "−", "+", "%", "^"].includes(key)
     setExpr((prev) => {
       if (prev === "Error") return isOp ? "0" : key
       if (fresh && !isOp) return key === "." ? "0." : key
@@ -152,7 +163,7 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
       </div>
       <div className="grid grid-cols-4 gap-1.5">
         {KEYS.flat().map((key) => {
-          const op = ["÷", "×", "−", "+", "=", "%"].includes(key)
+          const op = ["÷", "×", "−", "+", "=", "%", "(", ")", "√", "^"].includes(key)
           const danger = key === "C"
           return (
             <button
