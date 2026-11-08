@@ -1249,6 +1249,23 @@ def _printed_to_absolute_page(thread_key: str, printed_page: int, total_pages: i
     return printed_page
 
 
+def _stored_absolute_span(thread_key: str, start_page: int, end_page: int) -> Optional[tuple[int, int]]:
+    """Absolute pages from the last resolve, when the model repeated that printed range.
+
+    The background extract keeps rewriting the label map. A later read must not
+    translate the same printed numbers into a different chapter.
+    """
+    stored = _resolved_targets.get(thread_key) or {}
+    if (
+        start_page == stored.get("printed_start")
+        and end_page == stored.get("printed_end")
+        and stored.get("page_start")
+        and stored.get("page_end")
+    ):
+        return int(stored["page_start"]), int(stored["page_end"])
+    return None
+
+
 def _absolute_to_printed_label(thread_key: str, absolute_page: int) -> str:
     """The reverse of `_printed_to_absolute_page` — used only to format
     page numbers BACK into printed/logical terms for tool output, so
@@ -3087,8 +3104,12 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
     if start_page < 1 or end_page < start_page:
         return f"Xəta: Yanlış səhifə aralığı ({start_page}-{end_page})."
 
-    absolute_start = _printed_to_absolute_page(thread_key, start_page, total_pages)
-    absolute_end = _printed_to_absolute_page(thread_key, end_page, total_pages)
+    pinned = _stored_absolute_span(thread_key, start_page, end_page)
+    if pinned:
+        absolute_start, absolute_end = pinned
+    else:
+        absolute_start = _printed_to_absolute_page(thread_key, start_page, total_pages)
+        absolute_end = _printed_to_absolute_page(thread_key, end_page, total_pages)
     absolute_start = max(1, absolute_start)
     absolute_end = min(absolute_end, total_pages)
     if absolute_end < absolute_start:
@@ -3128,8 +3149,10 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
         if extract.stem.strip():
             return f"[Səhifə {printed_start}-{printed_end}]:\n{extract.stem.strip()}"
 
-    ocr_pages = await _ocr_page_range(thread_key, file_path, absolute_start, absolute_end)
+    ocr_pages, ocr_failed = await _ocr_page_range(thread_key, file_path, absolute_start, absolute_end)
     selected_text = "\n\n".join(ocr_pages).strip()
+    if ocr_failed and not selected_text:
+        return OCR_STALL_ERROR
     if not selected_text:
         return f"Səhifə {printed_start}-{printed_end} aralığında mətn tapılmadı."
     return f"[Səhifə {printed_start}-{printed_end}]:\n{selected_text}"
@@ -3245,13 +3268,18 @@ async def _ocr_page_range(
     file_path: str,
     abs_start: int,
     abs_end: int,
-) -> list[str]:
-    """OCR a short span on Modal so RapidOCR does not stay on Railway."""
+) -> tuple[list[str], bool]:
+    """OCR a short span on Modal so RapidOCR does not stay on Railway.
+
+    The bool is True when the stream failed. Empty strings are then a failed
+    read, not a successful blank page.
+    """
     from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
     cache = _ocr_page_cache.setdefault(thread_key, {})
     end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
     missing = [page for page in range(abs_start, end + 1) if page not in cache]
+    failed = False
     if missing:
         auth = _thread_auth.get(thread_key)
         token = auth[1] if auth else ""
@@ -3270,12 +3298,15 @@ async def _ocr_page_range(
         except Exception as exc:
             print(f"[VISION] OCR child failed: {exc}", flush=True)
             messages = []
+            failed = True
         for msg in messages:
             if msg.get("kind") == "ocr":
                 cache[int(msg["page"])] = str(msg.get("text") or "")
             elif msg.get("kind") == "error":
                 print(f"[VISION] OCR child error: {msg.get('message')}", flush=True)
-    return [cache.get(page, "") for page in range(abs_start, end + 1)]
+                failed = True
+    pages_out = [cache.get(page, "") for page in range(abs_start, end + 1)]
+    return pages_out, failed
 
 
 LOCATE_POLL_SECONDS = 8.0
@@ -3283,6 +3314,10 @@ LOCATE_POLL_INTERVAL = 0.4
 LOCATE_OCR_WINDOW = 15
 # Ordered map output waits on one slow page. 20s was the old one-page gap.
 OCR_MAP_STALL_SECONDS = 60
+OCR_STALL_ERROR = (
+    "Xəta: OCR stalled before the next page. "
+    "Bu səhifə aralığı oxunmadı."
+)
 LOCATE_BLOB_MAX_CHARS = 80_000
 
 
@@ -3318,8 +3353,12 @@ async def _ocr_until_marker(
     number: str,
     kind_arg: str,
     seed_pages: Optional[list[str]] = None,
-) -> tuple[list[str], Optional[tuple[int, str]]]:
-    """OCR up to 15 missing pages per download. Close the stream on the first heading."""
+) -> tuple[list[str], Optional[tuple[int, str]], bool]:
+    """OCR up to 15 missing pages per download. Close the stream on the first heading.
+
+    The third value is True when the OCR stream failed. The caller must not
+    open another window or ask Flash to guess from the gap.
+    """
     from modal_client import public_modal_error
     from vision_extract import FAST_OCR_DPI, FAST_OCR_MAX_PAGES
 
@@ -3340,12 +3379,13 @@ async def _ocr_until_marker(
 
     found = _hit()
     if found is not None:
-        return pages, found
+        return pages, found, False
     auth = _thread_auth.get(thread_key)
     if not auth:
-        return pages, None
+        return pages, None, False
 
     page = abs_start
+    failed = False
     while page <= end:
         window_end = min(page + LOCATE_OCR_WINDOW - 1, end)
         for candidate in range(page, window_end + 1):
@@ -3359,7 +3399,7 @@ async def _ocr_until_marker(
         ]
         found = _hit()
         if found is not None:
-            return pages, found
+            return pages, found, False
         if not missing:
             page = window_end + 1
             continue
@@ -3371,7 +3411,7 @@ async def _ocr_until_marker(
             signed = sign_document_url(file_path, auth[1])
         except Exception as exc:
             print(f"[VISION] OCR sign failed: {public_modal_error(exc)}", flush=True)
-            return pages, _hit()
+            return pages, _hit(), True
         child = ModalPdfStream(
             "ocr",
             signed,
@@ -3399,6 +3439,7 @@ async def _ocr_until_marker(
                 kind = msg.get("kind")
                 if kind == "error":
                     print(f"[VISION] OCR child error: {msg.get('message')}", flush=True)
+                    failed = True
                     break
                 if kind == "ocr":
                     got = int(msg["page"])
@@ -3409,14 +3450,16 @@ async def _ocr_until_marker(
                         pages[slot] = text
                     found = _hit()
                     if found is not None:
-                        return pages, found
+                        return pages, found, False
                 if kind == "done":
                     break
         finally:
             # Closing the response closes the Modal generator, which stops the map.
             child.close()
+        if failed:
+            return pages, _hit(), True
         page = window_end + 1
-    return pages, _hit()
+    return pages, _hit(), False
 
 
 async def _collect_span_pages(
@@ -3432,15 +3475,21 @@ async def _collect_span_pages(
 
     end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
     if use_ocr or not page_texts:
-        return await _ocr_page_range(thread_key, file_path, abs_start, end)
+        ocr_pages, ocr_failed = await _ocr_page_range(thread_key, file_path, abs_start, end)
+        if ocr_failed and not any((page or "").strip() for page in ocr_pages):
+            return []
+        return ocr_pages
     selected = page_texts[abs_start - 1:end]
     if len(selected) < (end - abs_start + 1):
         # Sparse tail: OCR the missing remainder, keep existing text pages.
-        ocr_pages = await _ocr_page_range(thread_key, file_path, abs_start, end)
+        ocr_pages, ocr_failed = await _ocr_page_range(thread_key, file_path, abs_start, end)
         merged: list[str] = []
         for i, ocr in enumerate(ocr_pages):
             text = selected[i] if i < len(selected) else ""
-            merged.append(text if (text or "").strip() else ocr)
+            if (text or "").strip() or ocr_failed:
+                merged.append(text)
+            else:
+                merged.append(ocr)
         return merged
     return selected
 
@@ -3694,15 +3743,9 @@ async def locate_marker_in_range(
         )
 
     printed_start_requested, printed_end_requested = start_page, end_page
-    stored_target = _resolved_targets.get(thread_key) or {}
-    if (
-        start_page == stored_target.get("printed_start")
-        and end_page == stored_target.get("printed_end")
-        and stored_target.get("page_start")
-        and stored_target.get("page_end")
-    ):
-        abs_start = int(stored_target["page_start"])
-        abs_end = int(stored_target["page_end"])
+    pinned = _stored_absolute_span(thread_key, start_page, end_page)
+    if pinned:
+        abs_start, abs_end = pinned
     else:
         abs_start = _printed_to_absolute_page(thread_key, start_page, total_pages)
         abs_end = _printed_to_absolute_page(thread_key, end_page, total_pages)
@@ -3720,8 +3763,9 @@ async def locate_marker_in_range(
     from vision_extract import FAST_OCR_MAX_PAGES
     span_end = min(abs_end, abs_start + FAST_OCR_MAX_PAGES - 1)
     use_ocr = bool(_scan_mode.get(thread_key))
+    stalled = False
     if use_ocr:
-        selected_pages, hit = await _ocr_until_marker(
+        selected_pages, hit, stalled = await _ocr_until_marker(
             thread_key, file_path, abs_start, span_end, number, kind_arg,
         )
     else:
@@ -3730,11 +3774,13 @@ async def locate_marker_in_range(
         )
         if hit is None and _span_incomplete(selected_pages):
             print("[VISION] span text still missing; OCR windows", flush=True)
-            selected_pages, hit = await _ocr_until_marker(
+            selected_pages, hit, stalled = await _ocr_until_marker(
                 thread_key, file_path, abs_start, span_end, number, kind_arg,
                 seed_pages=selected_pages,
             )
             use_ocr = True
+    if stalled and hit is None:
+        return OCR_STALL_ERROR
     tagged = _build_tagged_chapter_blob(thread_key, selected_pages, abs_start)
     span_end = abs_start + len(selected_pages) - 1 if selected_pages else abs_end
     if hit:

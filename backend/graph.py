@@ -32,6 +32,7 @@ from tools import (
     remember_pdf_turn,
     PDF_ASK_PAGE,
     PDF_INDEX_ERROR,
+    OCR_STALL_ERROR,
     reset_thread_document_if_new_file,
     ensure_struggle_context,
     get_indexed_file_path,
@@ -3913,6 +3914,23 @@ async def doc_tools_node(state: AgentState, config: RunnableConfig) -> Command[L
                 },
                 goto="composer_node",
             )
+
+    for tool_message in tool_messages:
+        if tool_message.name != "locate_marker_in_range":
+            continue
+        if not str(tool_message.content or "").startswith(OCR_STALL_ERROR):
+            continue
+        print("[VISION] OCR stall — stopping doc_worker", flush=True)
+        finish = _doc_worker_finish_update(
+            state,
+            OCR_STALL_ERROR,
+            extra={"messages": list(tool_messages), "tool_round_trips": round_trips},
+            config=config,
+        )
+        finish["extracted_text"] = ""
+        finish["chat_reply"] = OCR_STALL_ERROR
+        finish["worker_queue"] = []
+        return Command(update=finish, goto="composer_node")
 
     update: dict = {"messages": list(tool_messages), "tool_round_trips": round_trips}
 

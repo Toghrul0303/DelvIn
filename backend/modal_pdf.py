@@ -17,6 +17,7 @@ import json
 import queue
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -266,30 +267,62 @@ def _ocr_jpeg(jpeg: bytes) -> str:
         doc.close()
 
 
-def _render_ocr_jpegs(path: str, pages: list, dpi: int) -> list[tuple[int, bytes]]:
-    import pymupdf as fitz
+_OCR_BATCH = 4
+_OCR_PING_SECONDS = 15
+_OCR_BUDGET_SECONDS = 170
+_STORE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _cap_mupdf_store(fitz_mod) -> None:
+    """Keep a decoded full-page scan from growing the cache without a bound."""
+    try:
+        fitz_mod.TOOLS.store_maxsize = _STORE_MAX_BYTES
+    except Exception:
+        pass
+
+
+def _render_page_jpeg(doc, fitz_mod, page_no: int, dpi: int) -> bytes:
     from pdf_worker import _JPEG_QUALITY, _capped_matrix, _release_store
 
+    count = int(doc.page_count or 0)
+    if page_no < 1 or page_no > count:
+        return b""
+    page = None
+    pix = None
+    try:
+        page = doc.load_page(page_no - 1)
+        matrix = _capped_matrix(fitz_mod, page.rect.width, page.rect.height, dpi)
+        try:
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+        except TypeError:
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+        return pix.tobytes("jpeg", jpg_quality=_JPEG_QUALITY)
+    finally:
+        pix = None
+        page = None
+        _release_store(fitz_mod)
+
+
+def _render_ocr_jpegs(path: str, pages: list, dpi: int, messages: queue.Queue, stop: threading.Event) -> list[tuple[int, bytes]]:
+    """Render one page at a time. The caller deletes the PDF before OCR starts."""
+    import pymupdf as fitz
+
+    _cap_mupdf_store(fitz)
     doc = fitz.open(path)
     rendered: list[tuple[int, bytes]] = []
     try:
-        count = int(doc.page_count or 0)
         for raw in pages:
+            if stop.is_set():
+                break
             page_no = int(raw)
-            if page_no < 1 or page_no > count:
-                rendered.append((page_no, b""))
-                continue
-            page = doc.load_page(page_no - 1)
-            matrix = _capped_matrix(fitz, page.rect.width, page.rect.height, dpi)
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-            jpeg = pix.tobytes("jpeg", jpg_quality=_JPEG_QUALITY)
-            rendered.append((page_no, jpeg))
-            pix = None
-            page = None
-            _release_store(fitz)
+            rendered.append((page_no, _render_page_jpeg(doc, fitz, page_no, dpi)))
+            messages.put({"kind": "progress"})
         return rendered
     finally:
         doc.close()
+        _cap_mupdf_store(fitz)
+        from pdf_worker import _release_store
+        _release_store(fitz)
 
 
 def _close_mapper(mapper) -> None:
@@ -305,19 +338,73 @@ def _close_mapper(mapper) -> None:
         pass
 
 
-def _ocr_result(result) -> dict:
-    if isinstance(result, BaseException):
-        return {"kind": "error", "message": f"{type(result).__name__}: {result}"}
-    if isinstance(result, dict) and result.get("kind") in {"ocr", "error"}:
-        return result
-    return {"kind": "error", "message": "bad ocr result"}
+def _ocr_stream_message(result) -> dict:
+    """A bad page is empty text. Only a dead stream emits kind=error."""
+    if isinstance(result, dict) and result.get("kind") == "ocr":
+        try:
+            page = int(result.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+        return {"kind": "ocr", "page": page, "text": str(result.get("text") or "")}
+    page = 0
+    if isinstance(result, dict):
+        try:
+            page = int(result.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+    return {"kind": "ocr", "page": page, "text": ""}
+
+
+def _capture_ocr_exception(exc: BaseException) -> None:
+    _ensure_sentry()
+    try:
+        import sentry_sdk
+
+        if sentry_sdk.is_initialized():
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
+
+
+def _map_ocr_batches(
+    rendered: list[tuple[int, bytes]],
+    messages: queue.Queue,
+    stop: threading.Event,
+    mapper_box: dict,
+    mapper_lock: threading.Lock,
+) -> None:
+    """OCR four pages at a time. A slow page does not block the ones behind it."""
+    while rendered:
+        if stop.is_set():
+            return
+        batch = rendered[:_OCR_BATCH]
+        del rendered[:_OCR_BATCH]
+        mapper = ocr_page.map(
+            [page_no for page_no, _ in batch],
+            [jpeg for _, jpeg in batch],
+            order_outputs=False,
+            return_exceptions=True,
+        )
+        with mapper_lock:
+            mapper_box["mapper"] = mapper
+        try:
+            for result in mapper:
+                if stop.is_set():
+                    return
+                messages.put(_ocr_stream_message(result))
+        finally:
+            _close_mapper(mapper)
+            with mapper_lock:
+                if mapper_box.get("mapper") is mapper:
+                    mapper_box["mapper"] = None
+            del batch
 
 
 def _ndjson_ocr(job: str, url: str, payload: dict):
     """Download once, render the window, then OCR each page on its own container.
 
-    Results are yielded in page order. Closing this generator (the HTTP client
-    went away) closes the map.
+    Progress lines keep the Railway fetch timer from treating a cold start as
+    a stall. Closing this generator (the HTTP client went away) closes the map.
     """
     _ensure_sentry()
     yield _line({"kind": "ready"})
@@ -336,51 +423,82 @@ def _ndjson_ocr(job: str, url: str, payload: dict):
     except (TypeError, ValueError):
         dpi = 96
     dpi = min(max(dpi, 36), 150)
-    path = ""
-    mapper = None
-    try:
-        try:
-            path = _download(url)
-        except Exception as exc:
-            yield _line({
-                "kind": "error",
-                "message": f"document download failed: {type(exc).__name__}",
-            })
-            return
-        try:
-            rendered = _render_ocr_jpegs(path, pages, dpi)
-        except Exception as exc:
-            _ensure_sentry()
-            try:
-                import sentry_sdk
+    messages: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    mapper_lock = threading.Lock()
+    mapper_box: dict = {"mapper": None}
 
-                if sentry_sdk.is_initialized():
-                    sentry_sdk.capture_exception(exc)
-            except Exception:
-                pass
-            yield _line({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
-            return
-        mapper = ocr_page.map(
-            [page_no for page_no, _ in rendered],
-            [jpeg for _, jpeg in rendered],
-            order_outputs=True,
-            return_exceptions=True,
-        )
-        for result in mapper:
-            message = _ocr_result(result)
-            yield _line(message)
-            if message.get("kind") == "error":
-                return
-        yield _line({"kind": "done"})
-    except Exception as exc:
-        yield _line({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
-    finally:
-        _close_mapper(mapper)
-        if path:
+    def worker() -> None:
+        path = ""
+        try:
+            messages.put({"kind": "progress"})
             try:
-                os.remove(path)
-            except OSError:
-                pass
+                path = _download(url)
+            except Exception as exc:
+                messages.put({
+                    "kind": "error",
+                    "message": f"document download failed: {type(exc).__name__}",
+                })
+                return
+            try:
+                rendered = _render_ocr_jpegs(path, pages, dpi, messages, stop)
+            except Exception as exc:
+                _capture_ocr_exception(exc)
+                messages.put({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
+                return
+            finally:
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    path = ""
+            if stop.is_set():
+                return
+            _map_ocr_batches(rendered, messages, stop, mapper_box, mapper_lock)
+            if not stop.is_set():
+                messages.put({"kind": "done"})
+        except Exception as exc:
+            _capture_ocr_exception(exc)
+            messages.put({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
+        finally:
+            messages.put(None)
+
+    thread = threading.Thread(target=worker, name="modal-ocr-job", daemon=True)
+    thread.start()
+    deadline = time.monotonic() + _OCR_BUDGET_SECONDS
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                stop.set()
+                with mapper_lock:
+                    _close_mapper(mapper_box.get("mapper"))
+                    mapper_box["mapper"] = None
+                yield _line({
+                    "kind": "error",
+                    "message": "The PDF service exceeded its time limit.",
+                })
+                return
+            try:
+                item = messages.get(timeout=_OCR_PING_SECONDS)
+            except queue.Empty:
+                if not thread.is_alive():
+                    yield _line({"kind": "error", "message": "PDF OCR worker stopped"})
+                    return
+                yield _line({"kind": "progress"})
+                continue
+            if item is None:
+                break
+            yield _line(item)
+            if item.get("kind") == "error":
+                stop.set()
+                return
+    finally:
+        stop.set()
+        with mapper_lock:
+            _close_mapper(mapper_box.get("mapper"))
+            mapper_box["mapper"] = None
+        thread.join(timeout=5)
 
 
 @app.function(
