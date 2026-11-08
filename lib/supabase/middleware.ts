@@ -2,9 +2,27 @@ import { createServerClient } from "@supabase/ssr"
 import { NextResponse, type NextRequest } from "next/server"
 import { getSupabasePublicEnv } from "./env"
 
+function isWorkspacePath(pathname: string) {
+  return pathname === "/workspace" || pathname.startsWith("/workspace/")
+}
+
+function redirectWorkspaceToLogin(request: NextRequest, sessionResponse?: NextResponse) {
+  const url = request.nextUrl.clone()
+  url.pathname = "/login"
+  url.search = ""
+  url.searchParams.set("next", "/workspace")
+  const redirect = NextResponse.redirect(url)
+  sessionResponse?.cookies.getAll().forEach((cookie) => {
+    redirect.cookies.set(cookie)
+  })
+  return redirect
+}
+
 export async function updateSession(request: NextRequest) {
+  const workspace = isWorkspacePath(request.nextUrl.pathname)
   const env = getSupabasePublicEnv()
   if (!env) {
+    if (workspace) return redirectWorkspaceToLogin(request)
     return NextResponse.next({ request })
   }
 
@@ -24,6 +42,7 @@ export async function updateSession(request: NextRequest) {
     },
   })
 
-  await supabase.auth.getUser()
+  const { data } = await supabase.auth.getUser()
+  if (workspace && !data.user) return redirectWorkspaceToLogin(request, supabaseResponse)
   return supabaseResponse
 }

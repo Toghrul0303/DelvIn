@@ -1,7 +1,9 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
+import { useAuth } from "./auth-context"
 import { ModeContext } from "./mode-context"
 import { TopNavbar } from "./top-navbar"
 import { LeftSidebar } from "./left-sidebar"
@@ -19,6 +21,7 @@ const THEME_KEY = "locknlearn.theme"
 const CHAT_WIDTH_KEY = "locknlearn.chatWidth"
 const CHAT_WIDTH_DEFAULT = 400
 const CHAT_WIDTH_MIN = 360
+const WORKSPACE_LOGIN = "/login?next=/workspace"
 
 function clampChatWidth(value: number) {
   const max = Math.max(CHAT_WIDTH_MIN, Math.round(window.innerWidth * 0.33))
@@ -26,6 +29,8 @@ function clampChatWidth(value: number) {
 }
 
 export function Workspace() {
+  const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const [dark, setDark] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -60,6 +65,13 @@ export function Workspace() {
       return next
     })
   }, [])
+
+  useEffect(() => {
+    if (authLoading || user) return
+    router.replace(WORKSPACE_LOGIN)
+  }, [authLoading, user, router])
+
+  if (authLoading || !user) return null
 
   return (
     <ModeContext.Provider value={{ dark, toggleTheme }}>

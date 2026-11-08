@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { Globe, Moon, Sun } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { AccountMenu } from "./account-menu"
 import { NAV_TABS } from "./data"
 import { useMode } from "./mode-context"
 import { useLanguage } from "./language-context"
@@ -126,6 +127,7 @@ export function TopNavbar() {
       <div className="ml-auto flex items-center gap-2">
         <LanguageSwitcher />
         <ModeToggle />
+        <AccountMenu />
       </div>
     </header>
   )
