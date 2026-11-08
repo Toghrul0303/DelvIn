@@ -102,6 +102,9 @@ const en = {
     saved: "Saved",
     backendError:
       "Sorry — I couldn't reach the tutor backend. Please try again.",
+    textLimit: "You've used your {limit} text queries for today.",
+    visionLimit: "You've used your {limit} vision queries this month.",
+    seePlans: "See plans",
     addTrackerPrompt: "Add questions to Task Tracker?",
     addTracker: "Add questions to Task Tracker",
     summarize: "Summarize?",
@@ -343,6 +346,9 @@ const az: Messages = {
     saved: "Saxlanıldı",
     backendError:
       "Bağışlayın — repetitor serverinə qoşula bilmədim. Yenidən cəhd edin.",
+    textLimit: "Bu gün üçün {limit} mətn sorğunuzu artıq istifadə etmisiniz.",
+    visionLimit: "Bu ay üçün {limit} görüntü sorğunuzu artıq istifadə etmisiniz.",
+    seePlans: "Planlara bax",
     addTrackerPrompt: "Sualları Tapşırıq izləyiciyə əlavə edək?",
     addTracker: "Sualları Tapşırıq izləyiciyə əlavə et",
     summarize: "Xülasə?",
@@ -582,6 +588,9 @@ const tr: Messages = {
     saved: "Kaydedildi",
     backendError:
       "Üzgünüm — öğretmen sunucusuna ulaşılamadı. Tekrar deneyin.",
+    textLimit: "Bugün için {limit} metin sorgunuzu kullandınız.",
+    visionLimit: "Bu ay için {limit} görüntü sorgunuzu kullandınız.",
+    seePlans: "Planları gör",
     addTrackerPrompt: "Sorular Görev izleyiciye eklensin mi?",
     addTracker: "Soruları Görev izleyiciye ekle",
     summarize: "Özetle?",
@@ -821,6 +830,9 @@ const ru: Messages = {
     saved: "Сохранено",
     backendError:
       "Не удалось связаться с сервером репетитора. Попробуйте снова.",
+    textLimit: "Вы использовали свои {limit} текстовых запросов на сегодня.",
+    visionLimit: "Вы использовали свои {limit} запросов распознавания в этом месяце.",
+    seePlans: "Смотреть планы",
     addTrackerPrompt: "Добавить вопросы в трекер задач?",
     addTracker: "Добавить вопросы в трекер задач",
     summarize: "Кратко?",

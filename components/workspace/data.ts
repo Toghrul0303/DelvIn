@@ -88,6 +88,8 @@ export type ChatMessage = {
   suggestedActions?: SuggestedAction[]
   /** Stopped mid-generation — rendered as a divider, not a tutor bubble. */
   aborted?: boolean
+  /** Pricing page to open when this turn was rejected for a usage cap. */
+  upgradeHref?: string
   /** Internal prompt used to redo an aborted generation. */
   retryPrompt?: string
   retrySilent?: boolean

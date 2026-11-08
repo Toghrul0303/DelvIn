@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react"
+import { useRouter } from "next/navigation"
 import { createPortal } from "react-dom"
 import {
   ArrowUp,
@@ -51,7 +52,8 @@ import { useSession } from "./session-context"
 import { ModeToggle } from "./mode-toggle"
 import { useStudyMode } from "./study-mode-context"
 import { useMemoryBox } from "./memory-box-context"
-import { nameSavedFormula, recordStruggle, streamChatCompletion, type StudyMode } from "@/lib/api"
+import { AuthRequiredError, nameSavedFormula, recordStruggle, streamChatCompletion, UsageLimitError, type StudyMode } from "@/lib/api"
+import { redirectGuestToLogin } from "@/lib/auth-gate"
 import {
   isLargePdf,
   LARGE_PDF_BYTES,
@@ -765,6 +767,7 @@ export function ChatPane({
       },
     ]
   }, [t])
+  const router = useRouter()
   const { user, session: authSession } = useAuth()
   const threadIdRef = useRef(threadId)
   threadIdRef.current = threadId
@@ -1405,6 +1408,23 @@ export function ChatPane({
         markMessageAborted(aiMessageId)
         return
       }
+      if (error instanceof AuthRequiredError) {
+        setMessages((prev) => prev.filter((m) => m.id !== aiMessageId || m.content))
+        redirectGuestToLogin((href) => router.push(href))
+        return
+      }
+      if (error instanceof UsageLimitError) {
+        const limit = error.limit ?? (error.kind === "vision" ? 10 : 20)
+        const content = t(error.kind === "vision" ? "chat.visionLimit" : "chat.textLimit", { limit })
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== aiMessageId) return m
+            if (!m.content) return { ...m, content, upgradeHref: "/#pricing" }
+            return { ...m, upgradeHref: "/#pricing" }
+          }),
+        )
+        return
+      }
       console.error("[ChatPane] Failed to stream response from backend:", error)
       setMessages((prev) =>
         prev.map((m) =>
@@ -1430,7 +1450,9 @@ export function ChatPane({
       if (options?.offerEvaluation && !controller.signal.aborted) {
         setMessages((prev) =>
           prev.map((message) =>
-            message.id === aiMessageId ? { ...message, offerEvaluation: true } : message,
+            message.id === aiMessageId && !message.upgradeHref
+              ? { ...message, offerEvaluation: true }
+              : message,
           ),
         )
       }
@@ -2450,6 +2472,15 @@ function MessageBubble({
           )}
         </div>
         ) : null}
+
+          {message.upgradeHref ? (
+            <a
+              href={message.upgradeHref}
+              className="mt-1.5 inline-flex items-center rounded-lg bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"
+            >
+              {t("chat.seePlans")}
+            </a>
+          ) : null}
 
           {message.save && (
           <button
