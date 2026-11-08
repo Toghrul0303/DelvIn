@@ -57,10 +57,12 @@ export function PendingFileChip({
   file,
   onRemove,
   disabled,
+  statusLabel,
 }: {
   file: File
   onRemove: () => void
   disabled?: boolean
+  statusLabel?: string
 }) {
   const attachment = toChatAttachment(file)
   return (
@@ -69,8 +71,11 @@ export function PendingFileChip({
       className="inline-flex max-w-full items-center gap-2 rounded-xl border border-border bg-secondary/60 px-2.5 py-1.5 text-xs"
     >
       <KindIcon kind={attachment.kind} />
-      <span className="min-w-0 max-w-[11rem] truncate font-medium text-foreground">
-        {attachment.name}
+      <span className="min-w-0 max-w-[14rem]">
+        <span className="block truncate font-medium text-foreground">{attachment.name}</span>
+        {statusLabel ? (
+          <span className="block truncate text-muted-foreground">{statusLabel}</span>
+        ) : null}
       </span>
       <button
         type="button"
