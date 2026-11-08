@@ -12,6 +12,37 @@ export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace
 
 export const SUBMIT_STREAM_URL = `${API_BASE_URL}/submit_stream`
 
+export class UsageLimitError extends Error {
+  readonly kind: "text" | "vision"
+  readonly plan: string
+  readonly limit: number | null
+
+  constructor(kind: "text" | "vision", plan: string, limit: number | null) {
+    super(kind === "vision" ? "vision_limit" : "text_limit")
+    this.name = "UsageLimitError"
+    this.kind = kind
+    this.plan = plan
+    this.limit = limit
+  }
+}
+
+export class AuthRequiredError extends Error {
+  constructor() {
+    super("auth_required")
+    this.name = "AuthRequiredError"
+  }
+}
+
+function usageLimitFrom(data: unknown): UsageLimitError | null {
+  if (!data || typeof data !== "object") return null
+  const record = data as { code?: unknown; kind?: unknown; plan?: unknown; limit?: unknown }
+  if (record.code !== "usage_limit") return null
+  const kind = record.kind === "vision" ? "vision" : "text"
+  const plan = typeof record.plan === "string" && record.plan ? record.plan : "free"
+  const limit = typeof record.limit === "number" ? record.limit : null
+  return new UsageLimitError(kind, plan, limit)
+}
+
 export type StudyMode = "detailed" | "socratic"
 
 export type StreamChatParams = {
@@ -103,6 +134,10 @@ export async function streamChatCompletion({
   })
 
   if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    const limited = usageLimitFrom(data)
+    if (limited) throw limited
+    if (response.status === 401) throw new AuthRequiredError()
     throw new Error(`Chat request failed with status ${response.status}`)
   }
   if (!response.body) {
@@ -169,6 +204,9 @@ function dispatchSseFrame(
     } catch {
       continue
     }
+
+    const limited = usageLimitFrom(payload)
+    if (limited) throw limited
 
     const meta = payload.canvas_anchor_id
       ? { canvasAnchorId: payload.canvas_anchor_id }

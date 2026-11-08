@@ -41,6 +41,7 @@ from tools import (
     set_pipeline_status,
     _resolve_thread_key,
 )
+from usage import UsageLimitExceeded, ensure_vision_quota
 from vision_extract import (
     crop_image_diagrams_to_data_urls,
     vision_extract_image_file,
@@ -2233,6 +2234,7 @@ async def _resolve_cached_image_turn(
     if not path or not os.path.isfile(path):
         print("[VISION] screenshot cache miss but the image file is gone", flush=True)
         return None
+    await ensure_vision_quota(config)
     stem = await _vision_extract_image_stem(path, config, marker)
     kept = _cached_image_stem(state)
     if not stem and kept:
@@ -3209,6 +3211,8 @@ async def _force_extract_short_document(config: RunnableConfig) -> str:
             {"start_page": 1, "end_page": n},
             config=config,
         ))
+    except UsageLimitExceeded:
+        raise
     except Exception as e:
         print(f"[ANTI-LOOP] Auto read_page_range failed: {e}", flush=True)
         return ""
@@ -3715,6 +3719,7 @@ async def doc_worker_node(
         # the LLM through PDF-only tools. Bound to THIS turn's File path so
         # a prior screenshot cannot steal a later typed/PDF turn.
         original_name = _extract_original_filename(turn_raw) or ""
+        await ensure_vision_quota(config)
         extracted, active_image = await _inventory_image_page(
             turn_path, turn_stem, original_name, config
         )

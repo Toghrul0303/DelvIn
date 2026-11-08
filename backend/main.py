@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
@@ -34,6 +34,16 @@ from graph import (
 from agents import DEEPSEEK_ROUTER_TIMEOUT_SECONDS, _deepseek_model
 from locknlearn_schemas import StruggleRecord
 from polar_webhook import router as polar_webhook_router
+from usage import (
+    AuthRequired,
+    UsageLimitExceeded,
+    clear_vision_meter,
+    consume,
+    find_usage_limit,
+    note_request_metered,
+    usage_limit_body,
+    verify_user,
+)
 from tools import (
     cancel_embed_warmup,
     cancel_all_embed_jobs,
@@ -379,6 +389,11 @@ def _sse_event(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _sse_usage_limit(kind: str, plan: str, limit) -> str:
+    body = usage_limit_body({"kind": kind, "plan": plan, "limit": limit})
+    return f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+
 # SSE comment frames keep the HTTP connection alive while `doc_worker` is
 # silently indexing (no chat tokens). Without this, a long/stalled tool
 # looks identical to a dead backend on the frontend.
@@ -505,9 +520,12 @@ async def chat_stream_endpoint(
     request_start = time.time()
     print(f"[TIMING] Request Started ('/submit_stream', thread_id={thread_id})...", flush=True)
     temp_path = ""
+    is_image = False
+    request_id = ""
     try:
         agent_app = request.app.state.agent_app
         user_prompt = message
+        request_id = uuid.uuid4().hex
 
         if document and document.filename:
             print("[TIMING] Document Upload Read Started...", flush=True)
@@ -523,21 +541,46 @@ async def chat_stream_endpoint(
                         break
                     temp_file.write(chunk)
                 temp_path = temp_file.name
-            if not is_image:
-                _keep_thread_upload(thread_id, temp_path)
-            else:
-                _keep_thread_image(thread_id, temp_path)
-            clean_path = temp_path.replace("\\", "/")
-
-            user_prompt = (
-                f"{message} (File path: {clean_path}; "
-                f"Original filename: {os.path.basename(document.filename)})"
-            )
             print(f"[TIMING] Document Upload Read Ended - Took {time.time() - t_doc:.2f}s", flush=True)
         elif _is_storage_object_key(document_path):
             user_prompt = (
                 f"{message} (File path: {document_path}; "
                 f"Original filename: {os.path.basename(document_path)})"
+            )
+
+        try:
+            verified_user_id = await asyncio.to_thread(verify_user, access_token or "")
+            quota = await asyncio.to_thread(
+                consume, verified_user_id, "vision" if is_image else "text"
+            )
+        except AuthRequired:
+            if temp_path:
+                _remove_temp_upload(temp_path)
+                temp_path = ""
+            return JSONResponse({"code": "auth_required"}, status_code=401)
+
+        submitted_user_id = (user_id or "").strip()
+        if submitted_user_id and submitted_user_id != verified_user_id:
+            print("[QUOTA] form user_id does not match the access token", flush=True)
+
+        if not quota.get("allowed"):
+            if temp_path:
+                _remove_temp_upload(temp_path)
+                temp_path = ""
+            return JSONResponse(usage_limit_body(quota), status_code=402)
+
+        if is_image:
+            note_request_metered(request_id)
+
+        if document and document.filename and temp_path:
+            if not is_image:
+                _keep_thread_upload(thread_id, temp_path)
+            else:
+                _keep_thread_image(thread_id, temp_path)
+            clean_path = temp_path.replace("\\", "/")
+            user_prompt = (
+                f"{message} (File path: {clean_path}; "
+                f"Original filename: {os.path.basename(document.filename)})"
             )
 
         requested_mode = (mode or DEFAULT_STUDY_MODE).strip().lower()
@@ -555,7 +598,7 @@ async def chat_stream_endpoint(
         user_prompt = _build_mode_prefixed_prompt(user_prompt, mode)
         user_prompt = _with_ui_language(user_prompt, _normalize_ui_language(ui_language))
 
-        remember_thread_auth(thread_id, user_id or "", access_token or "")
+        remember_thread_auth(thread_id, verified_user_id, access_token or "")
         inputs = {
             "messages": [HumanMessage(content=user_prompt)],
             "struggle_context": "",
@@ -563,13 +606,14 @@ async def chat_stream_endpoint(
             "canvas_branch_from_id": canvas_branch_from_id or None,
             "study_mode": (mode or DEFAULT_STUDY_MODE).strip().lower(),
         }
-        request_id = uuid.uuid4().hex
         config = {
             "configurable": {
                 "thread_id": thread_id,
                 "request_id": request_id,
                 "user_name": user_name,
-                "user_id": user_id or "",
+                "user_id": verified_user_id,
+                "quota_user_id": verified_user_id,
+                "vision_metered": is_image,
                 "access_token": access_token or "",
                 "document_path": document_path or "",
                 "explain_source": (explain_source or "").strip().lower(),
@@ -853,6 +897,9 @@ async def chat_stream_endpoint(
                     if not next_item.done():
                         next_item.cancel()
                 print("[SSE DEBUG] astream loop exited", flush=True)
+            except UsageLimitExceeded as exc:
+                yield _sse_usage_limit(exc.kind, exc.plan, exc.limit)
+                return
             except GraphRecursionError:
                 # Hit the hard `recursion_limit` above — the agent was stuck
                 # in a loop (e.g. repeated `search_in_document` calls) and
@@ -875,6 +922,10 @@ async def chat_stream_endpoint(
                 # upstream 429/500 from the LLM provider) never reach the
                 # outer try/except below — log + surface them here instead so
                 # a failed turn is never silently swallowed.
+                limited = find_usage_limit(e)
+                if limited:
+                    yield _sse_usage_limit(limited.kind, limited.plan, limited.limit)
+                    return
                 elapsed = time.time() - request_start
                 print(f"[TIMING] Request FAILED mid-stream (thread_id={thread_id}) - Took {elapsed:.2f}s", flush=True)
                 print(f"XƏTA BAŞ VERDİ (stream): {str(e)}", flush=True)
@@ -902,6 +953,7 @@ async def chat_stream_endpoint(
                     yield event
                 completed = True
             finally:
+                clear_vision_meter(request_id)
                 if not completed:
                     # Client dropped / request cancelled: stop only the embed
                     # warm-up this request started. A finished turn keeps it.
@@ -919,6 +971,7 @@ async def chat_stream_endpoint(
         )
 
     except Exception as e:
+        clear_vision_meter(request_id)
         if temp_path and not _is_kept_upload(thread_id, temp_path):
             _remove_temp_upload(temp_path)
         print(f"[TIMING] Request FAILED (thread_id={thread_id}) - Took {time.time() - request_start:.2f}s", flush=True)

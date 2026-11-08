@@ -25,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from usage import ensure_vision_quota
 from modal_client import (
     EXTRACT_BUDGET_SECONDS,
     EXTRACT_STALL_SECONDS,
@@ -3144,6 +3145,7 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
     if span <= SHORT_DOC_MAX_PAGES:
         from vision_extract import crop_diagrams_in_child, vision_extract_pages
         pages = list(range(absolute_start, absolute_end + 1))
+        await ensure_vision_quota(config)
         extract = await vision_extract_pages(
             file_path, pages, marker="worksheet", access_token=_thread_access_token(thread_key),
         )
@@ -3160,6 +3162,7 @@ async def read_page_range(start_page: int, end_page: int, config: RunnableConfig
         if extract.stem.strip():
             return f"[Səhifə {printed_start}-{printed_end}]:\n{extract.stem.strip()}"
 
+    await ensure_vision_quota(config)
     ocr_pages, ocr_failed = await _ocr_page_range(thread_key, file_path, absolute_start, absolute_end)
     selected_text = "\n\n".join(ocr_pages).strip()
     if ocr_failed and not selected_text:
