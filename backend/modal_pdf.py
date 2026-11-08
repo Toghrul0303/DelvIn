@@ -13,6 +13,7 @@ _BACKEND = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
+import hashlib
 import json
 import queue
 import tempfile
@@ -115,7 +116,74 @@ def _report_download_error(exc: BaseException, url: str) -> None:
         print(f"[PDF] sentry capture failed: {type(capture_exc).__name__}", flush=True)
 
 
-def _download(url: str) -> str:
+_CACHE_TTL_SECONDS = 10 * 60
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), "locknlearn-pdf-cache")
+_download_lock = threading.Lock()
+
+
+def _object_cache_key(url: str) -> str:
+    """Storage object path. The signed query string is not part of the key."""
+    parsed = urllib.parse.urlparse(url or "")
+    path = urllib.parse.unquote(parsed.path or "")
+    for marker in ("/object/sign/", "/object/public/", "/object/authenticated/"):
+        idx = path.find(marker)
+        if idx >= 0:
+            return path[idx + len(marker):].strip("/")
+    return path.strip("/")
+
+
+def _cached_pdf_path(key: str) -> str:
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return os.path.join(_CACHE_DIR, digest + ".pdf")
+
+
+def _is_cached_pdf(path: str) -> bool:
+    if not path:
+        return False
+    try:
+        cache_dir = os.path.abspath(_CACHE_DIR)
+        return os.path.commonpath([os.path.abspath(path), cache_dir]) == cache_dir
+    except ValueError:
+        return False
+
+
+def _fresh_cache(path: str) -> bool:
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            return False
+        return time.time() - os.path.getmtime(path) <= _CACHE_TTL_SECONDS
+    except OSError:
+        return False
+
+
+def _purge_stale_cache() -> None:
+    if not os.path.isdir(_CACHE_DIR):
+        return
+    now = time.time()
+    try:
+        names = os.listdir(_CACHE_DIR)
+    except OSError:
+        return
+    for name in names:
+        full = os.path.join(_CACHE_DIR, name)
+        try:
+            if now - os.path.getmtime(full) > _CACHE_TTL_SECONDS:
+                os.remove(full)
+        except OSError:
+            pass
+
+
+def _release_download(path: str) -> None:
+    """Drop a one-shot temp file. A cached PDF stays for the chapter span."""
+    if not path or _is_cached_pdf(path):
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _download_temp(url: str) -> str:
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
         with urllib.request.urlopen(url, timeout=90) as response:
@@ -134,6 +202,32 @@ def _download(url: str) -> str:
         except OSError:
             pass
         raise
+
+
+def _download(url: str) -> str:
+    key = _object_cache_key(url)
+    if not key:
+        return _download_temp(url)
+    cached = _cached_pdf_path(key)
+    with _download_lock:
+        if _fresh_cache(cached):
+            try:
+                os.utime(cached, None)
+            except OSError:
+                pass
+            print(f"[PDF] reuse cached download bytes={os.path.getsize(cached)}", flush=True)
+            return cached
+    temp = _download_temp(url)
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    with _download_lock:
+        if _fresh_cache(cached):
+            _release_download(temp)
+            print(f"[PDF] reuse cached download bytes={os.path.getsize(cached)}", flush=True)
+            return cached
+        os.replace(temp, cached)
+        _purge_stale_cache()
+    print(f"[PDF] cached download bytes={os.path.getsize(cached)}", flush=True)
+    return cached
 
 
 def _run_job(path: str, job: str, payload: dict, hook) -> None:
@@ -212,11 +306,7 @@ def _ndjson(job: str, url: str, payload: dict, allowed: set[str]):
             yield _line(item)
         thread.join(timeout=5)
     finally:
-        if path:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        _release_download(path)
 
 
 @app.function(
@@ -447,12 +537,8 @@ def _ndjson_ocr(job: str, url: str, payload: dict):
                 messages.put({"kind": "error", "message": f"{type(exc).__name__}: {exc}"})
                 return
             finally:
-                if path:
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-                    path = ""
+                _release_download(path)
+                path = ""
             if stop.is_set():
                 return
             _map_ocr_batches(rendered, messages, stop, mapper_box, mapper_lock)

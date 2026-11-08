@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from tavily import TavilyClient
@@ -437,12 +437,15 @@ _embed_jobs: dict[str, _EmbedJob] = {}
 @dataclass
 class _PdfIndexJob:
     """One Modal extract per storage key. `ready` fires when the outline and
-    page count are stored; `task` keeps streaming pages and chunks after that."""
+    page count are stored; `task` keeps streaming pages and chunks after that.
+    `span_ready` fires when the priority chapter span is stored, before the
+    rest of the book is extracted."""
     ready: asyncio.Event
     storage_key: str
     thread_key: str
     task: Optional[asyncio.Task] = None
     snapshot: Optional[dict] = None
+    span_ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 _pdf_index_jobs: dict[str, _PdfIndexJob] = {}
@@ -2486,6 +2489,9 @@ async def _index_pdf_document(
                     )
                 except Exception as exc:
                     print(f"[PDF] span extract failed: {exc!r}", flush=True)
+                finally:
+                    if not job.span_ready.is_set():
+                        job.span_ready.set()
                 if _index_generation_current(thread_key, generation):
                     skip = set(range(int(span["page_start"]), int(span["page_end"]) + 1))
                     print("[PDF] full extract after span", flush=True)
@@ -2498,6 +2504,9 @@ async def _index_pdf_document(
                         generation=generation,
                         skip_pages=skip,
                     )
+            else:
+                if not job.span_ready.is_set():
+                    job.span_ready.set()
             if (
                 _index_generation_current(thread_key, generation)
                 and int(result.get("page_count") or 0) > 0
@@ -2514,6 +2523,8 @@ async def _index_pdf_document(
                 job.snapshot = _empty_pdf_result(public_modal_error(exc))
                 job.ready.set()
         finally:
+            if not job.span_ready.is_set():
+                job.span_ready.set()
             if not job.ready.is_set():
                 job.snapshot = job.snapshot or _empty_pdf_result("pdf extract failed")
                 job.ready.set()
@@ -3325,22 +3336,63 @@ def _span_incomplete(pages: list[str]) -> bool:
     return not pages or any(not (page or "").strip() for page in pages)
 
 
+def _pending_span_event(
+    thread_key: str,
+    file_path: str,
+    config: RunnableConfig,
+) -> Optional[asyncio.Event]:
+    """The in-flight chapter extract, if it has not stored its pages yet."""
+    configurable = config.get("configurable") or {}
+    candidates = [
+        file_path,
+        _indexed_file_paths.get(thread_key) or "",
+        str(configurable.get("document_path") or ""),
+    ]
+    indexed = _indexed_file_paths.get(thread_key) or ""
+    if indexed:
+        candidates.append(_storage_key(config, indexed))
+    seen: set[str] = set()
+    for path in candidates:
+        key = _pdf_job_key(path)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        job = _pdf_index_jobs.get(key)
+        if job is not None and not job.span_ready.is_set():
+            return job.span_ready
+    return None
+
+
 async def _poll_pages_for_marker(
     thread_key: str,
     abs_start: int,
     abs_end: int,
     number: str,
     kind_arg: str,
+    until: Optional[asyncio.Event] = None,
 ) -> tuple[list[str], Optional[tuple[int, str]]]:
-    """Re-read pages the background extract is inserting. Stop at the first heading."""
+    """Re-read pages the background extract is inserting. Stop at the first heading.
+
+    `until` is the chapter-span event. A text-layer locate waits for that
+    instead of the short poll, and reads once more after it fires so the last
+    inserted page is visible.
+    """
     pages: list[str] = []
     deadline = time.monotonic() + LOCATE_POLL_SECONDS
+
+    def _hit(current: list[str]) -> Optional[tuple[int, str]]:
+        return _find_marker_in_page_texts(current, abs_start, number, True, kind_arg)
+
     while True:
         pages = await load_page_span(thread_key, abs_start, abs_end)
-        hit = _find_marker_in_page_texts(pages, abs_start, number, True, kind_arg)
+        hit = _hit(pages)
         if hit is not None or not _span_incomplete(pages):
             return pages, hit
-        if time.monotonic() >= deadline:
+        if until is not None:
+            if until.is_set():
+                pages = await load_page_span(thread_key, abs_start, abs_end)
+                return pages, _hit(pages)
+        elif time.monotonic() >= deadline:
             return pages, None
         await asyncio.sleep(LOCATE_POLL_INTERVAL)
 
@@ -3769,8 +3821,11 @@ async def locate_marker_in_range(
             thread_key, file_path, abs_start, span_end, number, kind_arg,
         )
     else:
+        span_ready = _pending_span_event(thread_key, file_path, config)
+        if span_ready is not None:
+            print("[VISION] waiting for chapter text extract", flush=True)
         selected_pages, hit = await _poll_pages_for_marker(
-            thread_key, abs_start, span_end, number, kind_arg,
+            thread_key, abs_start, span_end, number, kind_arg, until=span_ready,
         )
         if hit is None and _span_incomplete(selected_pages):
             print("[VISION] span text still missing; OCR windows", flush=True)
