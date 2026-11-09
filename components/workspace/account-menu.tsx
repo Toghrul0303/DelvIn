@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react"
 import Link from "next/link"
+import { DEMO_USER, isMockAuth } from "@/lib/mock-auth"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
 import { useAuth } from "./auth-context"
@@ -54,6 +55,10 @@ function paidAlive(row: SubscriptionRow) {
   return Number.isFinite(end) && end > Date.now()
 }
 
+function demoUsage(): UsageView {
+  return { plan: "free", paid: false, textUsed: 0, textCap: 20, visionUsed: 0, visionCap: 10 }
+}
+
 function usageFromRow(row: SubscriptionRow | null): UsageView {
   const today = utcDay()
   const month = utcMonthStart()
@@ -78,7 +83,9 @@ export function AccountMenu() {
   const panelId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const [usageState, setUsageState] = useState<LoadState>({ status: "loading" })
+  const [usageState, setUsageState] = useState<LoadState>(() =>
+    isMockAuth() ? { status: "ready", usage: demoUsage() } : { status: "loading" },
+  )
   const [pendingPortal, setPendingPortal] = useState(false)
   const [portalFailed, setPortalFailed] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
@@ -102,6 +109,11 @@ export function AccountMenu() {
 
   useEffect(() => {
     if (!open || !user) return
+    if (isMockAuth() || user.id === DEMO_USER.id) {
+      setUsageState({ status: "ready", usage: demoUsage() })
+      setPortalFailed(false)
+      return
+    }
     let cancelled = false
     setUsageState({ status: "loading" })
     setPortalFailed(false)
@@ -132,7 +144,9 @@ export function AccountMenu() {
 
   if (!user) return null
 
-  const initial = (user.email?.trim().charAt(0) || "?").toUpperCase()
+  const metaName = user.user_metadata?.name
+  const displayName = typeof metaName === "string" ? metaName.trim() : ""
+  const initial = (displayName || user.email || "?").trim().charAt(0).toUpperCase()
   const usage = usageState.status === "ready" ? usageState.usage : null
   const planLabel = usage
     ? t(
@@ -164,8 +178,8 @@ export function AccountMenu() {
 
   async function onSignOut() {
     setSigningOut(true)
-    const message = await signOut()
-    if (message) setSigningOut(false)
+    await signOut()
+    setSigningOut(false)
   }
 
   const showUpgrade = usageState.status === "error" || (usage != null && !usage.paid) || portalFailed
@@ -190,6 +204,10 @@ export function AccountMenu() {
           aria-label={t("account.open")}
           className="absolute right-0 z-50 mt-2 w-60 rounded-xl border border-border bg-card p-3 text-xs shadow-sm"
         >
+          <div className="mb-2 space-y-0.5 border-b border-border pb-2 text-muted-foreground">
+            {displayName ? <p className="font-medium text-foreground">{displayName}</p> : null}
+            <p className="truncate">{user.email}</p>
+          </div>
           <div className="space-y-1 text-muted-foreground">
             {usageState.status === "loading" ? (
               <p aria-hidden="true">…</p>

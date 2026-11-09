@@ -76,9 +76,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
     void run(mode, email, password)
   }
 
-  if (!configured) {
-    return <p className="text-sm text-muted-foreground">{t("sidebar.authUnavailable")}</p>
-  }
+  if (!configured) return null
 
   return (
     <form onSubmit={onSubmit} className="flex w-full max-w-sm flex-col gap-3">

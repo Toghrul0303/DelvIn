@@ -1,7 +1,9 @@
-import type { NextRequest } from "next/server"
+import { NextResponse, type NextRequest } from "next/server"
+import { isMockAuth } from "@/lib/mock-auth"
 import { updateSession } from "@/lib/supabase/middleware"
 
 export async function middleware(request: NextRequest) {
+  if (isMockAuth()) return NextResponse.next({ request })
   return updateSession(request)
 }
 

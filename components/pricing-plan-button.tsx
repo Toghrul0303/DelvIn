@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { isMockAuth } from "@/lib/mock-auth"
 import { useAuth } from "@/components/workspace/auth-context"
 
 const PLAN_NAMES = {
@@ -36,7 +37,7 @@ export function PricingPlanButton({ name }: { name: string }) {
   async function upgrade() {
     setError(null)
     if (!user) {
-      window.location.href = `/login?next=${encodeURIComponent("/#pricing")}`
+      if (!isMockAuth()) window.location.href = `/login?next=${encodeURIComponent("/#pricing")}`
       return
     }
     setPending(true)
@@ -48,7 +49,8 @@ export function PricingPlanButton({ name }: { name: string }) {
       })
       const payload = (await response.json().catch(() => null)) as { url?: string; error?: string } | null
       if (response.status === 401) {
-        window.location.href = `/login?next=${encodeURIComponent("/#pricing")}`
+        if (!isMockAuth()) window.location.href = `/login?next=${encodeURIComponent("/#pricing")}`
+        else setError(payload?.error || "Checkout is unavailable.")
         return
       }
       if (!response.ok || typeof payload?.url !== "string" || !payload.url.startsWith("https://")) {

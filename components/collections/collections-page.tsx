@@ -19,6 +19,7 @@ import { rememberLastThread } from "@/components/workspace/session-context"
 import { DynamicDeskWidget } from "@/components/workspace/dynamic-desk-widget"
 import { MathMarkdown } from "@/components/workspace/math-markdown"
 import { mathRehypePlugins, mathRemarkPlugins } from "@/lib/markdown-math"
+import { isMockAuth } from "@/lib/mock-auth"
 import { useAuth } from "@/components/workspace/auth-context"
 import { useLanguage } from "@/components/workspace/language-context"
 import { redirectGuestToLogin } from "@/lib/auth-gate"
@@ -67,11 +68,12 @@ export function CollectionsPage() {
   const dateLocale = localeToBcp47(locale)
 
   useEffect(() => {
+    if (isMockAuth()) return
     if (authLoading || user) return
     redirectGuestToLogin((href) => router.replace(href))
   }, [authLoading, user, router])
 
-  if (authLoading || !user) {
+  if (!isMockAuth() && (authLoading || !user)) {
     return <div className="min-h-dvh bg-background" />
   }
 

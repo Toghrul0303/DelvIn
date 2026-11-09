@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
+import { isMockAuth } from "@/lib/mock-auth"
 import { useAuth } from "./auth-context"
 import { ModeContext } from "./mode-context"
 import { TopNavbar } from "./top-navbar"
@@ -67,11 +68,12 @@ export function Workspace() {
   }, [])
 
   useEffect(() => {
+    if (isMockAuth()) return
     if (authLoading || user) return
     router.replace(WORKSPACE_LOGIN)
   }, [authLoading, user, router])
 
-  if (authLoading || !user) return null
+  if (!isMockAuth() && (authLoading || !user)) return null
 
   return (
     <ModeContext.Provider value={{ dark, toggleTheme }}>

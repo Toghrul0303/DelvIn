@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import type { Session, User } from "@supabase/supabase-js"
+import { demoSession, isMockAuth } from "@/lib/mock-auth"
 import { createClient } from "@/lib/supabase/client"
 import { safeNextPath } from "@/lib/safe-next"
 import {
@@ -75,12 +76,18 @@ async function reconcileOwner(userId: string): Promise<boolean> {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [configured] = useState(() => Boolean(createClient()))
-  const [loading, setLoading] = useState(true)
-  const [session, setSession] = useState<Session | null>(null)
+  const mock = isMockAuth()
+  const [configured] = useState(() => !mock && Boolean(createClient()))
+  const [loading, setLoading] = useState(!mock)
+  const [session, setSession] = useState<Session | null>(() => (mock ? demoSession() : null))
   const [authEpoch, setAuthEpoch] = useState(0)
 
   useEffect(() => {
+    if (mock) {
+      setSession(demoSession())
+      setLoading(false)
+      return
+    }
     const supabase = createClient()
     if (!supabase) {
       setLoading(false)
@@ -107,9 +114,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true
       subscription.unsubscribe()
     }
-  }, [])
+  }, [mock])
 
   const signIn = useCallback(async (email: string, password: string) => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     const { error } = await supabase.auth.signInWithPassword({ email, password })
@@ -117,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signUp = useCallback(async (email: string, password: string) => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     const { error } = await supabase.auth.signUp({ email, password })
@@ -124,6 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signInWithGoogle = useCallback(async (nextPath?: string) => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     const next = safeNextPath(nextPath)
@@ -136,6 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const requestPasswordReset = useCallback(async (email: string) => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/update-password")}`
@@ -144,6 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const updatePassword = useCallback(async (password: string) => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     const { error } = await supabase.auth.updateUser({ password })
@@ -151,6 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    if (isMockAuth()) return null
     const supabase = createClient()
     if (!supabase) return "Supabase is not configured."
     await flushPendingWithin(SIGN_OUT_STEP_TIMEOUT_MS)
@@ -180,12 +193,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSyncFrozen(false)
   }, [authEpoch])
 
+  const activeSession = mock ? session ?? demoSession() : session
+
   const value = useMemo<AuthContextValue>(
     () => ({
       configured,
       loading,
-      user: session?.user ?? null,
-      session,
+      user: activeSession?.user ?? null,
+      session: activeSession,
       signIn,
       signUp,
       signInWithGoogle,
@@ -196,7 +211,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       configured,
       loading,
-      session,
+      activeSession,
       signIn,
       signUp,
       signInWithGoogle,

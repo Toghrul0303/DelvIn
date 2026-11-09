@@ -33,9 +33,7 @@ export default function ForgotPasswordPage() {
           <h1 className="font-display text-xl font-semibold">{t("sidebar.resetTitle")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t("sidebar.resetHelper")}</p>
         </div>
-        {!configured ? (
-          <p className="text-sm text-muted-foreground">{t("sidebar.authUnavailable")}</p>
-        ) : (
+        {!configured ? null : (
           <form onSubmit={(event) => void onSubmit(event)} className="flex w-full max-w-sm flex-col gap-3">
             <input
               type="email"

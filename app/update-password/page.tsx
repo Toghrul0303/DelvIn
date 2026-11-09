@@ -33,9 +33,7 @@ export default function UpdatePasswordPage() {
         <div className="text-center">
           <h1 className="font-display text-xl font-semibold">{t("sidebar.updatePasswordTitle")}</h1>
         </div>
-        {!configured ? (
-          <p className="text-sm text-muted-foreground">{t("sidebar.authUnavailable")}</p>
-        ) : loading ? null : !user ? (
+        {!configured ? null : loading ? null : !user ? (
           <div className="flex w-full max-w-sm flex-col gap-3">
             <p className="text-sm text-muted-foreground">{t("sidebar.invalidRecoveryLink")}</p>
             <Link

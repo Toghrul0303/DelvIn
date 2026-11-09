@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr"
 import { NextResponse, type NextRequest } from "next/server"
+import { isMockAuth } from "@/lib/mock-auth"
 import { getSupabasePublicEnv } from "./env"
 
 function isWorkspacePath(pathname: string) {
@@ -19,12 +20,11 @@ function redirectWorkspaceToLogin(request: NextRequest, sessionResponse?: NextRe
 }
 
 export async function updateSession(request: NextRequest) {
+  if (isMockAuth()) return NextResponse.next({ request })
+
   const workspace = isWorkspacePath(request.nextUrl.pathname)
   const env = getSupabasePublicEnv()
-  if (!env) {
-    if (workspace) return redirectWorkspaceToLogin(request)
-    return NextResponse.next({ request })
-  }
+  if (!env) return NextResponse.next({ request })
 
   let supabaseResponse = NextResponse.next({ request })
   const supabase = createServerClient(env.url, env.anonKey, {

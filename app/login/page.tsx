@@ -9,12 +9,13 @@ import { useLanguage } from "@/components/workspace/language-context"
 import { safeNextPath } from "@/lib/safe-next"
 
 function LoginScreen() {
-  const { user, loading, signOut } = useAuth()
+  const { user, loading, signOut, configured } = useAuth()
   const { t } = useLanguage()
   const searchParams = useSearchParams()
   const nextPath = safeNextPath(searchParams.get("next"))
   const reason = searchParams.get("reason")
   const authError = searchParams.get("error")
+  const showGuestGate = !loading && !user && configured
 
   return (
     <main className="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
@@ -25,18 +26,18 @@ function LoginScreen() {
             <p className="mt-1 text-sm text-muted-foreground">
               {t("sidebar.signedInAs", { email: user.email ?? "" })}
             </p>
-          ) : (
+          ) : showGuestGate ? (
             <p className="mt-1 text-sm text-muted-foreground">
               {reason === "feature" ? t("sidebar.featureLogin") : t("sidebar.authSubtitle")}
             </p>
-          )}
+          ) : null}
         </div>
         {authError === "callback" ? (
           <p className="w-full max-w-sm text-xs leading-snug text-destructive">
             {t("sidebar.authCallbackError")}
           </p>
         ) : null}
-        {loading ? null : user ? (
+        {loading || (!user && !configured) ? null : user ? (
           <div className="flex w-full max-w-sm flex-col gap-2">
             <Link
               href={nextPath}
