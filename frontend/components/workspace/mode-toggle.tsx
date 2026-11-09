@@ -5,7 +5,7 @@ import { TOOL_MODES } from "./data"
 import { useLanguage } from "./language-context"
 import { useStudyMode } from "./study-mode-context"
 
-export function ModeToggle({ disabled }: { disabled?: boolean }) {
+export function ModeToggle({ disabled, className }: { disabled?: boolean; className?: string }) {
   const { studyMode, setStudyMode } = useStudyMode()
   const { t } = useLanguage()
 
@@ -13,7 +13,10 @@ export function ModeToggle({ disabled }: { disabled?: boolean }) {
     <div
       role="group"
       aria-label={t("modes.aria")}
-      className="ml-auto flex shrink-0 items-center rounded-full border border-border bg-secondary p-0.5"
+      className={cn(
+        "ml-auto flex w-max shrink-0 items-center rounded-full border border-border bg-secondary p-0.5",
+        className,
+      )}
     >
       {TOOL_MODES.map((mode) => {
         const selected = studyMode.id === mode.id

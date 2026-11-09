@@ -142,7 +142,7 @@ export function PomodoroTimer({
       className="relative flex items-center"
     >
       {expanded && (
-        <div className="absolute right-0 bottom-full z-10 mb-3 w-64 rounded-2xl border border-border bg-popover/95 shadow-2xl backdrop-blur-md">
+        <div className="absolute top-full left-0 z-10 mt-3 w-64 rounded-2xl border border-border bg-popover/95 shadow-2xl backdrop-blur-md md:top-auto md:right-0 md:bottom-full md:left-auto md:mt-0 md:mb-3">
           <div className="flex items-center gap-1.5 border-b border-border px-2 py-2">
             <span
               onPointerDown={(e) => controls.start(e)}

@@ -15,6 +15,7 @@ import {
   Plus,
   RotateCcw,
   Square,
+  X,
   XCircle,
 } from "lucide-react"
 import { type Components } from "react-markdown"
@@ -50,6 +51,8 @@ import {
 } from "./desk-context"
 import { useSession } from "./session-context"
 import { ModeToggle } from "./mode-toggle"
+import { startSheetDrag, useSheetDragControls } from "./mobile-sheet"
+import { useMediaQuery } from "@/hooks/use-media-query"
 import { useStudyMode } from "./study-mode-context"
 import { useMemoryBox } from "./memory-box-context"
 import { AuthRequiredError, nameSavedFormula, recordStruggle, streamChatCompletion, UsageLimitError, type StudyMode } from "@/lib/api"
@@ -755,6 +758,8 @@ export function ChatPane({
   }, [threadId])
   const { studyMode } = useStudyMode()
   const { locale, t } = useLanguage()
+  const mobile = useMediaQuery("(max-width: 767px)")
+  const sheetDrag = useSheetDragControls()
   const appendReviewHint = useCallback((prev: ChatMessage[], questionId: string) => {
     const hintId = `review-hint:${questionId}`
     if (prev.some((message) => message.id === hintId)) return prev
@@ -1896,17 +1901,21 @@ export function ChatPane({
     <aside
       aria-label={t("chat.aria")}
       className={cn(
-        "flex h-full shrink-0 flex-col border-l border-border bg-card/40 origin-bottom-right transition-[transform,opacity] duration-300 ease-out",
-        collapsed
+        "flex min-h-0 w-full shrink-0 flex-col bg-card/40",
+        mobile
+          ? "min-h-0 flex-1 border-0"
+          : "h-full origin-bottom-right border-l border-border transition-[transform,opacity] duration-300 ease-out",
+        !mobile && collapsed
           ? "pointer-events-none fixed right-0 bottom-0 z-30 opacity-0"
           : "relative opacity-100",
       )}
-      style={{
-        width: chatWidth,
-        transform: collapsed ? "scale(0.18) translateY(12px)" : "none",
-      }}
+      style={
+        !mobile && collapsed
+          ? { width: chatWidth, transform: "scale(0.18) translateY(12px)" }
+          : undefined
+      }
     >
-      {!collapsed ? (
+      {!collapsed && !mobile ? (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -1929,25 +1938,29 @@ export function ChatPane({
         />
       ) : null}
       {/* Header */}
-      <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-        <TutorAvatar className="size-11" />
-        <div className="min-w-0">
-          <h2 className="truncate font-sans text-sm font-semibold leading-none">Delvin</h2>
+      <div
+        className="flex items-center gap-2 border-b border-border px-3 py-2 md:gap-2.5 md:px-4 md:py-3"
+        onPointerDown={(event) => startSheetDrag(sheetDrag, event)}
+      >
+        <TutorAvatar className="size-10 shrink-0 md:size-11" />
+        <h2 className="shrink-0 truncate font-sans text-sm font-semibold leading-none">Delvin</h2>
+        <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain">
+          <ModeToggle disabled={isSending} className="ml-0" />
         </div>
-        <ModeToggle disabled={isSending} />
         <button
           type="button"
           onClick={onToggle}
           aria-label={t("chat.collapse")}
           title={t("chat.collapse")}
-          className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="grid size-11 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:size-8"
         >
-          <ChevronsRight className="size-4" aria-hidden="true" />
+          <X className="size-4 md:hidden" aria-hidden="true" />
+          <ChevronsRight className="hidden size-4 md:block" aria-hidden="true" />
         </button>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="scroll-slim flex-1 space-y-4 overflow-y-auto p-4">
+      <div ref={scrollRef} className="scroll-slim min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {messages.map((m, index) => (
           <MessageBubble
             key={m.id}
@@ -2033,7 +2046,7 @@ export function ChatPane({
       {explainTip && !highlightAsk ? <ExplainTip tip={explainTip} tipRef={explainTipRef} /> : null}
 
       {/* Input bar */}
-      <div className="border-t border-border p-3">
+      <div className="border-t border-border p-3 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {attachedFile && isLargePdf(attachedFile) && (
           <div className="mb-2 rounded-xl border border-border bg-secondary/50 px-3 py-2">
             <p className="text-xs text-muted-foreground">{t("chat.addTrackerPrompt")}</p>
@@ -2186,7 +2199,7 @@ export function ChatPane({
             rows={1}
             disabled={isSending}
             placeholder={t("chat.placeholder")}
-            className="block min-h-9 flex-1 resize-none self-start bg-transparent py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:opacity-60"
+            className="block min-h-9 flex-1 resize-none self-start bg-transparent py-2 text-base leading-5 outline-none placeholder:text-muted-foreground disabled:opacity-60 md:text-sm"
           />
 
           <button
@@ -2659,9 +2672,11 @@ function ExplainTip({
 
 export function ChatCollapseFab({
   collapsed,
+  concealed = false,
   onExpand,
 }: {
   collapsed: boolean
+  concealed?: boolean
   onExpand: () => void
 }) {
   const { t } = useLanguage()
@@ -2670,9 +2685,11 @@ export function ChatCollapseFab({
       type="button"
       onClick={onExpand}
       aria-label={t("chat.expand")}
+      aria-hidden={!collapsed || concealed}
+      tabIndex={collapsed && !concealed ? 0 : -1}
       className={cn(
-        "fixed right-6 bottom-6 z-40 border-0 bg-transparent p-0 shadow-none outline-none transition-opacity duration-300",
-        collapsed ? "opacity-100" : "pointer-events-none opacity-0",
+        "chat-fab fixed right-4 z-40 border-0 bg-transparent p-0 shadow-none outline-none transition-opacity duration-300 md:right-6",
+        collapsed && !concealed ? "opacity-100" : "pointer-events-none opacity-0",
       )}
     >
       <TutorAvatar className="size-[4.4rem] rounded-none border-0 bg-transparent shadow-none" />

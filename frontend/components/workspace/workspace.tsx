@@ -4,11 +4,12 @@ import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { useAuth } from "./auth-context"
-import { ModeContext } from "./mode-context"
+import { ModeContext, type ThemePreference } from "./mode-context"
 import { TopNavbar } from "./top-navbar"
 import { LeftSidebar } from "./left-sidebar"
 import { Desk } from "./desk"
 import { ChatCollapseFab, ChatPane } from "./chat-pane"
+import { MobileSheet } from "./mobile-sheet"
 import { TaskTrackerProvider } from "./task-tracker-context"
 import { DeskProvider } from "./desk-context"
 import { SessionProvider } from "./session-context"
@@ -16,8 +17,24 @@ import { SessionSliceSync } from "./session-slice-sync"
 import { StudyModeProvider } from "./study-mode-context"
 import { ExplainModeProvider } from "./explain-mode-context"
 import { WhiteboardProvider } from "./canvas/whiteboard-context"
+import { useLanguage } from "./language-context"
 
 const THEME_KEY = "locknlearn.theme"
+
+function readTheme(): ThemePreference {
+  const stored = window.localStorage.getItem(THEME_KEY)
+  if (stored === "dark" || stored === "light" || stored === "system") return stored
+  return "light"
+}
+
+function prefersDark() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+}
+
+function resolveDark(theme: ThemePreference) {
+  if (theme === "system") return prefersDark()
+  return theme === "dark"
+}
 const CHAT_WIDTH_KEY = "locknlearn.chatWidth"
 const CHAT_WIDTH_DEFAULT = 400
 const CHAT_WIDTH_MIN = 360
@@ -30,16 +47,43 @@ function clampChatWidth(value: number) {
 
 export function Workspace() {
   const router = useRouter()
+  const { t } = useLanguage()
   const { user, loading: authLoading } = useAuth()
+  const [theme, setThemeState] = useState<ThemePreference>("light")
   const [dark, setDark] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
 
   useEffect(() => {
-    setDark(window.localStorage.getItem(THEME_KEY) === "dark")
+    const next = readTheme()
+    setThemeState(next)
+    setDark(resolveDark(next))
     const stored = Number(window.localStorage.getItem(CHAT_WIDTH_KEY))
     if (Number.isFinite(stored) && stored > 0) setChatWidth(clampChatWidth(stored))
+    if (window.matchMedia("(max-width: 767px)").matches) setChatCollapsed(true)
+    if (window.matchMedia("(min-width: 768px) and (max-width: 1023px)").matches) {
+      setSidebarCollapsed(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (theme !== "system") return
+    const media = window.matchMedia("(prefers-color-scheme: dark)")
+    const apply = () => setDark(media.matches)
+    apply()
+    media.addEventListener("change", apply)
+    return () => media.removeEventListener("change", apply)
+  }, [theme])
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)")
+    const closeDrawer = () => {
+      if (media.matches) setDrawerOpen(false)
+    }
+    media.addEventListener("change", closeDrawer)
+    return () => media.removeEventListener("change", closeDrawer)
   }, [])
 
   useEffect(() => {
@@ -58,13 +102,35 @@ export function Workspace() {
     window.localStorage.setItem(CHAT_WIDTH_KEY, String(next))
   }, [])
 
-  const toggleTheme = useCallback(() => {
-    setDark((prev) => {
-      const next = !prev
-      window.localStorage.setItem(THEME_KEY, next ? "dark" : "light")
+  const setTheme = useCallback((next: ThemePreference) => {
+    setThemeState(next)
+    setDark(resolveDark(next))
+    window.localStorage.setItem(THEME_KEY, next)
+  }, [])
+
+  const toggleDrawer = useCallback(() => {
+    setDrawerOpen((open) => {
+      const next = !open
+      if (next) setChatCollapsed(true)
       return next
     })
   }, [])
+
+  const toggleChat = useCallback(() => {
+    setChatCollapsed((collapsed) => {
+      const next = !collapsed
+      if (!next) setDrawerOpen(false)
+      return next
+    })
+  }, [])
+
+  const openChat = useCallback(() => {
+    setChatCollapsed(false)
+    setDrawerOpen(false)
+  }, [])
+
+  const closeChat = useCallback(() => setChatCollapsed(true), [])
+  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
 
   useEffect(() => {
     if (authLoading || user) return
@@ -74,7 +140,7 @@ export function Workspace() {
   if (authLoading || !user) return null
 
   return (
-    <ModeContext.Provider value={{ dark, toggleTheme }}>
+    <ModeContext.Provider value={{ dark, theme, setTheme }}>
       <SessionProvider>
       <TaskTrackerProvider>
       <DeskProvider>
@@ -94,7 +160,7 @@ export function Workspace() {
           />
 
           <div className="relative z-10 flex h-full flex-col">
-            <TopNavbar />
+            <TopNavbar menuOpen={drawerOpen} onMenuToggle={toggleDrawer} />
 
             <div className="flex min-h-0 flex-1">
               <LeftSidebar
@@ -106,23 +172,38 @@ export function Workspace() {
                 <Desk />
               </main>
 
-              <div
-                className={cn("shrink-0", chatCollapsed && "w-0")}
-                style={chatCollapsed ? undefined : { width: chatWidth }}
+              <MobileSheet
+                side="bottom"
+                open={!chatCollapsed}
+                onClose={closeChat}
+                label={t("chat.aria")}
+                columnWidth={chatWidth}
+                columnCollapsed={chatCollapsed}
               >
                 <ChatPane
                   collapsed={chatCollapsed}
                   chatWidth={chatWidth}
                   onChatWidthChange={setChatWidthLive}
                   onChatWidthCommit={commitChatWidth}
-                  onToggle={() => setChatCollapsed((c) => !c)}
+                  onToggle={toggleChat}
                 />
-              </div>
+              </MobileSheet>
             </div>
-            <ChatCollapseFab
-              collapsed={chatCollapsed}
-              onExpand={() => setChatCollapsed(false)}
-            />
+            <MobileSheet
+              id="workspace-drawer"
+              side="left"
+              open={drawerOpen}
+              onClose={closeDrawer}
+              label={t("sidebar.workspace")}
+            >
+              <LeftSidebar
+                variant="drawer"
+                collapsed={false}
+                onToggle={closeDrawer}
+                onNavigate={closeDrawer}
+              />
+            </MobileSheet>
+            <ChatCollapseFab collapsed={chatCollapsed} concealed={drawerOpen} onExpand={openChat} />
           </div>
         </div>
       </div>

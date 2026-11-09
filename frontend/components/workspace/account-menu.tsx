@@ -2,10 +2,12 @@
 
 import { useEffect, useId, useRef, useState } from "react"
 import Link from "next/link"
+import { Monitor, Moon, Sun } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
 import { useAuth } from "./auth-context"
 import { useLanguage } from "./language-context"
+import { useMode, type ThemePreference } from "./mode-context"
 
 type PlanName = "free" | "pro" | "premium"
 
@@ -72,9 +74,16 @@ function usageFromRow(row: SubscriptionRow | null): UsageView {
   }
 }
 
+const THEME_OPTIONS: { id: ThemePreference; icon: typeof Sun; label: "nav.light" | "nav.dark" | "nav.system" }[] = [
+  { id: "light", icon: Sun, label: "nav.light" },
+  { id: "dark", icon: Moon, label: "nav.dark" },
+  { id: "system", icon: Monitor, label: "nav.system" },
+]
+
 export function AccountMenu() {
   const { user, signOut } = useAuth()
   const { t } = useLanguage()
+  const { theme, setTheme } = useMode()
   const panelId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -179,7 +188,7 @@ export function AccountMenu() {
         aria-controls={panelId}
         aria-label={t("account.open")}
         onClick={() => setOpen((value) => !value)}
-        className="grid size-8 place-items-center rounded-full border border-border bg-card text-xs font-semibold text-foreground shadow-sm transition-colors hover:border-primary/40"
+        className="grid size-11 place-items-center rounded-full border border-border bg-card text-xs font-semibold text-foreground shadow-sm transition-colors hover:border-primary/40 md:size-8"
       >
         {initial}
       </button>
@@ -188,8 +197,34 @@ export function AccountMenu() {
           id={panelId}
           role="dialog"
           aria-label={t("account.open")}
-          className="absolute right-0 z-50 mt-2 w-60 rounded-xl border border-border bg-card p-3 text-xs shadow-sm"
+          className="absolute right-0 z-50 mt-2 w-[min(17rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-card p-3 text-xs shadow-sm"
         >
+          <div
+            role="radiogroup"
+            aria-label={t("nav.appearance")}
+            className="mb-3 grid grid-cols-3 gap-1 rounded-lg bg-secondary p-1"
+          >
+            {THEME_OPTIONS.map((option) => {
+              const Icon = option.icon
+              const selected = theme === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setTheme(option.id)}
+                  className={cn(
+                    "flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[0.65rem] font-semibold leading-tight",
+                    selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" aria-hidden="true" />
+                  {t(option.label)}
+                </button>
+              )
+            })}
+          </div>
           <div className="space-y-1 text-muted-foreground">
             {usageState.status === "loading" ? (
               <p aria-hidden="true">…</p>

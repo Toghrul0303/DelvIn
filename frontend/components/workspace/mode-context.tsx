@@ -2,14 +2,19 @@
 
 import { createContext, useContext } from "react"
 
+export type ThemePreference = "light" | "dark" | "system"
+
 type ModeContextValue = {
+  /** Resolved appearance. System follows the OS setting. */
   dark: boolean
-  toggleTheme: () => void
+  theme: ThemePreference
+  setTheme: (theme: ThemePreference) => void
 }
 
 export const ModeContext = createContext<ModeContextValue>({
   dark: false,
-  toggleTheme: () => {},
+  theme: "light",
+  setTheme: () => {},
 })
 
 export function useMode() {

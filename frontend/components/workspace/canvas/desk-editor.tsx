@@ -20,6 +20,7 @@ import {
 } from "tldraw"
 import { Calculator, CircleHelp } from "lucide-react"
 import { DESK_CAMERA_EVENT } from "@/lib/desk-events"
+import { useMediaQuery } from "@/hooks/use-media-query"
 import { useMode } from "../mode-context"
 import { useLanguage } from "../language-context"
 import { useExplainMode } from "../explain-mode-context"
@@ -76,6 +77,7 @@ function DeskGeneratedContextMenu(props: TLUiContextMenuProps) {
 
 function SlimToolbar() {
   const editor = useEditor()
+  const mobile = useMediaQuery("(max-width: 767px)")
   const { t } = useLanguage()
   const { armed, setArmed } = useExplainMode()
   const calculatorOpen = useValue(
@@ -85,7 +87,7 @@ function SlimToolbar() {
   )
 
   return (
-    <DefaultToolbar orientation="vertical" minItems={6} maxItems={6}>
+    <DefaultToolbar orientation={mobile ? "horizontal" : "vertical"} minItems={6} maxItems={6}>
       <SelectToolbarItem />
       <HandToolbarItem />
       <DrawToolbarItem />

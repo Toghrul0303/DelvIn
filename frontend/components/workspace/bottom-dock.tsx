@@ -10,7 +10,7 @@ export function BottomDock({
   constraintsRef?: RefObject<HTMLDivElement | null>
 }) {
   return (
-    <div className="absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center">
+    <div className="absolute top-3 left-3 z-[320] flex items-center md:top-auto md:bottom-4 md:left-1/2 md:-translate-x-1/2">
       <PomodoroTimer dragConstraints={constraintsRef} />
     </div>
   )

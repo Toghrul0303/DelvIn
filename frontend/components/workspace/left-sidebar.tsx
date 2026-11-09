@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   ChevronDown,
@@ -30,9 +31,13 @@ const COMING_SOON_FOLDERS = new Set(["graphs", "summaries"])
 export function LeftSidebar({
   collapsed,
   onToggle,
+  variant = "rail",
+  onNavigate,
 }: {
   collapsed: boolean
   onToggle: () => void
+  variant?: "rail" | "drawer"
+  onNavigate?: () => void
 }) {
   const { resetSession, sessions, threadId, selectSession, deleteSession, patchSession } = useSession()
   const {
@@ -43,6 +48,7 @@ export function LeftSidebar({
   const router = useRouter()
   const { user, loading: authLoading } = useAuth()
   const { t } = useLanguage()
+  const drawer = variant === "drawer"
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftTitle, setDraftTitle] = useState("")
   const skipCommit = useRef(false)
@@ -82,6 +88,7 @@ export function LeftSidebar({
   }
 
   const openMemoryFolder = (route: string) => {
+    if (drawer) onNavigate?.()
     if (authLoading) {
       pendingRoute.current = route
       return
@@ -103,8 +110,11 @@ export function LeftSidebar({
   return (
     <aside
       className={cn(
-        "relative z-20 flex shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground transition-all duration-500 ease-out",
-        collapsed ? "w-16" : "w-72",
+        "relative z-20 shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground",
+        drawer
+          ? "flex h-full min-h-0 w-full flex-1"
+          : "hidden transition-all duration-500 ease-out md:flex",
+        !drawer && (collapsed ? "w-16" : "w-72"),
       )}
     >
       {/* Header / session buttons */}
@@ -115,26 +125,42 @@ export function LeftSidebar({
               {t("sidebar.workspace")}
             </span>
           )}
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
-            className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
-          >
-            {collapsed ? (
-              <ChevronsRight className="size-4" aria-hidden="true" />
-            ) : (
-              <ChevronsLeft className="size-4" aria-hidden="true" />
-            )}
-          </button>
+          {drawer ? null : (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+              className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            >
+              {collapsed ? (
+                <ChevronsRight className="size-4" aria-hidden="true" />
+              ) : (
+                <ChevronsLeft className="size-4" aria-hidden="true" />
+              )}
+            </button>
+          )}
         </div>
+
+        {drawer ? (
+          <Link
+            href="/"
+            onClick={onNavigate}
+            className="flex h-11 items-center rounded-xl px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          >
+            {t("nav.home")}
+          </Link>
+        ) : null}
 
         <button
           type="button"
-          onClick={resetSession}
+          onClick={() => {
+            resetSession()
+            if (drawer) onNavigate?.()
+          }}
           className={cn(
             "bg-brand-gradient ring-brand-glow flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-white transition-transform hover:-translate-y-px",
             collapsed && "justify-center px-0",
+            drawer && "h-11",
           )}
         >
           <Plus className="size-4" aria-hidden="true" />
@@ -145,7 +171,12 @@ export function LeftSidebar({
       {collapsed ? (
         <CollapsedRail onOpen={openMemoryFolder} />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-4 px-3 pb-4">
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col gap-4 px-3 pb-4",
+            drawer && "overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]",
+          )}
+        >
           <Section title={t("sidebar.mySessions")} className="shrink-0">
             {sessions.length === 0 ? (
               <p className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -181,13 +212,17 @@ export function LeftSidebar({
                         ) : (
                           <button
                             type="button"
-                            onClick={() => selectSession(s.id)}
+                            onClick={() => {
+                              selectSession(s.id)
+                              if (drawer) onNavigate?.()
+                            }}
                             onDoubleClick={(event) => {
                               event.preventDefault()
                               beginRename(s.id, s.title)
                             }}
                             className={cn(
-                              "flex w-full items-center gap-2 rounded-lg py-2 pl-2.5 pr-16 text-left text-sm transition-colors",
+                              "flex w-full items-center gap-2 rounded-lg py-2 pl-2.5 text-left text-sm transition-colors",
+                              drawer ? "pr-24" : "pr-16",
                               active
                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                 : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
@@ -203,7 +238,14 @@ export function LeftSidebar({
                           </button>
                         )}
                         {editingId !== s.id && (
-                        <div className="pointer-events-none absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                        <div
+                          className={cn(
+                            "absolute inset-y-0 right-1 flex items-center gap-0.5",
+                            drawer
+                              ? "opacity-100"
+                              : "pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+                          )}
+                        >
                           <button
                             type="button"
                             aria-label={t("sidebar.renameSession")}
@@ -211,7 +253,10 @@ export function LeftSidebar({
                               event.stopPropagation()
                               beginRename(s.id, s.title)
                             }}
-                            className="pointer-events-auto grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+                            className={cn(
+                              "pointer-events-auto grid place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                              drawer ? "size-11" : "size-7",
+                            )}
                           >
                             <Pencil className="size-3.5" aria-hidden="true" />
                           </button>
@@ -222,7 +267,10 @@ export function LeftSidebar({
                               event.stopPropagation()
                               deleteSession(s.id)
                             }}
-                            className="pointer-events-auto grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            className={cn(
+                              "pointer-events-auto grid place-items-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive",
+                              drawer ? "size-11" : "size-7",
+                            )}
                           >
                             <Trash2 className="size-3.5" aria-hidden="true" />
                           </button>
@@ -235,7 +283,7 @@ export function LeftSidebar({
             )}
           </Section>
 
-          <TaskTracker />
+          <TaskTracker collapsible={drawer} />
 
           <Section title={t("sidebar.memoryBox")} className="shrink-0">
             <div className="grid grid-cols-2 gap-2">
@@ -278,13 +326,21 @@ export function LeftSidebar({
   )
 }
 
-function TaskTracker() {
+function TaskTracker({ collapsible = false }: { collapsible?: boolean }) {
   const { chapters, progress } = useTaskTracker()
   const { t } = useLanguage()
+  const [open, setOpen] = useState(!collapsible)
 
   return (
-    <Section title={t("sidebar.taskTracker")} className="flex min-h-0 flex-1 flex-col">
-      {chapters.length === 0 ? (
+    <Section
+      title={t("sidebar.taskTracker")}
+      className={collapsible ? "shrink-0" : "flex min-h-0 flex-1 flex-col"}
+      collapsible={collapsible}
+      open={open}
+      onToggle={() => setOpen((value) => !value)}
+    >
+      {!collapsible || open ? (
+      chapters.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/60 px-4 py-8 text-center">
           <p className="text-sm font-medium text-foreground">{t("sidebar.noProblemSet")}</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground text-pretty">
@@ -323,7 +379,8 @@ function TaskTracker() {
             ))}
           </div>
         </>
-      )}
+      )
+      ) : null}
     </Section>
   )
 }
@@ -431,16 +488,39 @@ function Section({
   title,
   children,
   className,
+  collapsible = false,
+  open = true,
+  onToggle,
 }: {
   title: string
   children: React.ReactNode
   className?: string
+  collapsible?: boolean
+  open?: boolean
+  onToggle?: () => void
 }) {
   return (
     <section className={className}>
-      <h2 className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
+      {collapsible ? (
+        <h2>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={onToggle}
+            className="mb-2 flex min-h-11 w-full items-center justify-between gap-2 px-1 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+          >
+            {title}
+            <ChevronDown
+              className={cn("size-4 shrink-0 transition-transform duration-300", !open && "-rotate-90")}
+              aria-hidden="true"
+            />
+          </button>
+        </h2>
+      ) : (
+        <h2 className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          {title}
+        </h2>
+      )}
       {children}
     </section>
   )

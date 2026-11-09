@@ -26,6 +26,10 @@ const en = {
     focusMode: "Dark",
     light: "Light",
     dark: "Dark",
+    system: "System",
+    appearance: "Appearance",
+    openMenu: "Open menu",
+    closeMenu: "Close menu",
     language: "Language",
   },
   account: {
@@ -144,6 +148,7 @@ const en = {
     newDeskResult: "New Workspace result",
     collapse: "Collapse chat panel",
     expand: "Show chat",
+    dragToClose: "Drag down to close",
     resize: "Resize chat",
   },
   templates: {
@@ -284,6 +289,10 @@ const az: Messages = {
     focusMode: "Qaranlıq",
     light: "İşıqlı",
     dark: "Qaranlıq",
+    system: "Sistem",
+    appearance: "Görünüş",
+    openMenu: "Menyunu aç",
+    closeMenu: "Menyunu bağla",
     language: "Dil",
   },
   account: {
@@ -402,6 +411,7 @@ const az: Messages = {
     newDeskResult: "Yeni iş sahəsi nəticəsi",
     collapse: "Söhbət panelini bağla",
     expand: "Söhbəti göstər",
+    dragToClose: "Bağlamaq üçün aşağı çəkin",
     resize: "Söhbətin enini dəyiş",
   },
   templates: {
@@ -540,6 +550,10 @@ const tr: Messages = {
     focusMode: "Koyu",
     light: "Açık",
     dark: "Koyu",
+    system: "Sistem",
+    appearance: "Görünüm",
+    openMenu: "Menüyü aç",
+    closeMenu: "Menüyü kapat",
     language: "Dil",
   },
   account: {
@@ -658,6 +672,7 @@ const tr: Messages = {
     newDeskResult: "Yeni çalışma alanı sonucu",
     collapse: "Sohbet panelini kapat",
     expand: "Sohbeti göster",
+    dragToClose: "Kapatmak için aşağı çekin",
     resize: "Sohbet genişliğini değiştir",
   },
   templates: {
@@ -796,6 +811,10 @@ const ru: Messages = {
     focusMode: "Тёмная",
     light: "Светлая",
     dark: "Тёмная",
+    system: "Системная",
+    appearance: "Оформление",
+    openMenu: "Открыть меню",
+    closeMenu: "Закрыть меню",
     language: "Язык",
   },
   account: {
@@ -914,6 +933,7 @@ const ru: Messages = {
     newDeskResult: "Новый результат рабочего пространства",
     collapse: "Свернуть панель чата",
     expand: "Показать чат",
+    dragToClose: "Потяните вниз, чтобы закрыть",
     resize: "Изменить ширину чата",
   },
   templates: {

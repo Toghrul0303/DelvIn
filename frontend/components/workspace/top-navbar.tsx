@@ -1,13 +1,11 @@
 "use client"
 
 import Link from "next/link"
-import { Globe, Moon, Sun } from "lucide-react"
+import { Menu, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AccountMenu } from "./account-menu"
 import { NAV_TABS } from "./data"
-import { useMode } from "./mode-context"
 import { useLanguage } from "./language-context"
-import { LOCALES, type Locale } from "@/lib/i18n"
 
 function Logo() {
   return (
@@ -16,34 +14,25 @@ function Logo() {
       <img
         src="/DelvIn_light_mode_transparent.png"
         alt="DelvIn"
-        className="h-6 max-h-6 w-auto shrink-0 object-contain dark:hidden"
+        className="h-6 max-h-6 w-auto max-w-[34vw] shrink-0 object-contain md:max-w-none dark:hidden"
       />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/DelvIn_dark_mode_transparent.png"
         alt=""
-        className="hidden h-6 max-h-6 w-auto shrink-0 object-contain dark:block"
+        className="hidden h-6 max-h-6 w-auto max-w-[34vw] shrink-0 object-contain md:max-w-none dark:block"
       />
     </>
   )
 }
 
-function Tabs({ vertical }: { vertical?: boolean }) {
+function Tabs() {
   const { t } = useLanguage()
   return (
-    <nav
-      aria-label={t("nav.workspaceSections")}
-      className={cn(
-        "flex items-center gap-1",
-        vertical && "flex-col items-stretch gap-0.5",
-      )}
-    >
+    <nav aria-label={t("nav.workspaceSections")} className="hidden items-center gap-1 md:flex">
       <Link
         href="/"
-        className={cn(
-          "rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
-          vertical && "text-left",
-        )}
+        className="rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       >
         {t("nav.home")}
       </Link>
@@ -51,10 +40,7 @@ function Tabs({ vertical }: { vertical?: boolean }) {
         <Link
           key={tab}
           href="/workspace"
-          className={cn(
-            "rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors",
-            vertical && "text-left",
-          )}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors"
         >
           {t(`nav.${tab}`)}
         </Link>
@@ -63,70 +49,35 @@ function Tabs({ vertical }: { vertical?: boolean }) {
   )
 }
 
-function ModeToggle() {
-  const { dark, toggleTheme } = useMode()
+export function TopNavbar({
+  menuOpen = false,
+  onMenuToggle,
+}: {
+  menuOpen?: boolean
+  onMenuToggle?: () => void
+}) {
   const { t } = useLanguage()
   return (
-    <button
-      type="button"
-      onClick={toggleTheme}
-      aria-pressed={dark}
-      aria-label={dark ? t("nav.dark") : t("nav.light")}
-      className="group inline-flex items-center gap-2 rounded-full border border-border bg-card px-1 py-1 pr-3 text-sm font-medium shadow-sm transition-colors hover:border-primary/40"
-    >
-      <span
-        className={cn(
-          "grid size-6 place-items-center rounded-full",
-          dark ? "bg-brand-gradient text-white" : "bg-secondary text-muted-foreground",
-        )}
-      >
-        {dark ? (
-          <Moon className="size-3.5" aria-hidden="true" />
-        ) : (
-          <Sun className="size-3.5" aria-hidden="true" />
-        )}
-      </span>
-      <span className="hidden md:inline">{dark ? t("nav.dark") : t("nav.light")}</span>
-    </button>
-  )
-}
-
-function LanguageSwitcher() {
-  const { locale, setLocale, t } = useLanguage()
-  return (
-    <label className="relative inline-flex items-center">
-      <span className="sr-only">{t("nav.language")}</span>
-      <Globe className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" aria-hidden="true" />
-      <select
-        value={locale}
-        aria-label={t("nav.language")}
-        onChange={(event) => setLocale(event.target.value as Locale)}
-        className="h-8 cursor-pointer appearance-none rounded-full border border-border bg-card py-0 pr-7 pl-8 text-xs font-semibold uppercase tracking-wide text-foreground shadow-sm outline-none transition-colors hover:border-primary/40"
-      >
-        {LOCALES.map((item) => (
-          <option key={item.code} value={item.code}>
-            {item.short}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
-export function TopNavbar() {
-  return (
-    <header className="relative z-30 flex h-16 shrink-0 items-center border-b border-border px-4">
-      <div className="flex items-center gap-2">
+    <header className="relative z-[500] box-border flex h-[calc(4rem+env(safe-area-inset-top))] shrink-0 items-center border-b border-border px-2 pt-[env(safe-area-inset-top)] md:px-4">
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={onMenuToggle}
+          aria-expanded={menuOpen}
+          aria-controls="workspace-drawer"
+          aria-label={menuOpen ? t("nav.closeMenu") : t("nav.openMenu")}
+          className="grid size-11 place-items-center rounded-lg text-foreground transition-colors hover:bg-accent md:hidden"
+        >
+          {menuOpen ? <X className="size-5" aria-hidden="true" /> : <Menu className="size-5" aria-hidden="true" />}
+        </button>
         <Tabs />
       </div>
 
-      <div className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center">
+      <div className="pointer-events-none absolute inset-x-0 top-[env(safe-area-inset-top)] flex h-16 items-center justify-center">
         <Logo />
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
-        <LanguageSwitcher />
-        <ModeToggle />
+      <div className={cn("ml-auto flex items-center")}>
         <AccountMenu />
       </div>
     </header>

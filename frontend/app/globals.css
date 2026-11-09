@@ -448,6 +448,38 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
   box-shadow: 0 8px 28px rgba(15, 10, 20, 0.12);
   padding: 4px;
 }
+@media (max-width: 767px) {
+  .desk-tldraw .tlui-layout__bottom,
+  .desk-tldraw .tl-toolbar {
+    left: 50% !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: calc(8px + env(safe-area-inset-bottom)) !important;
+    width: max-content !important;
+    max-width: calc(100% - 1.5rem) !important;
+    transform: translateX(-50%) !important;
+  }
+  .desk-tldraw .tlui-main-toolbar,
+  .desk-tldraw .tlui-main-toolbar__inner,
+  .desk-tldraw .tlui-main-toolbar__tools,
+  .desk-tldraw .tlui-toolbar {
+    flex-direction: row !important;
+  }
+  .desk-tldraw .tlui-main-toolbar--vertical {
+    height: auto !important;
+  }
+  .desk-tldraw .tlui-main-toolbar__extras {
+    display: none !important;
+  }
+}
+.chat-fab {
+  bottom: calc(5.25rem + env(safe-area-inset-bottom));
+}
+@media (min-width: 768px) {
+  .chat-fab {
+    bottom: 1.5rem;
+  }
+}
 .desk-tldraw .tl-theme__light,
 .desk-tldraw .tl-container {
   background: transparent !important;

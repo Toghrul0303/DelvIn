@@ -58,9 +58,10 @@ export function Desk() {
       className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
     >
       <div className="flex items-center gap-1 border-b border-border px-3 py-2">
-        <span className="mr-1 grid size-7 place-items-center rounded-lg bg-accent text-accent-foreground">
+        <span className="mr-1 grid size-7 shrink-0 place-items-center rounded-lg bg-accent text-accent-foreground">
           <Layers className="size-4" aria-hidden="true" />
         </span>
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {boards.map((board) =>
           editingId === board.id ? (
             <input
@@ -80,7 +81,7 @@ export function Desk() {
                   cancelRename()
                 }
               }}
-              className="h-8 w-36 rounded-lg border border-border bg-card px-2 text-sm text-foreground outline-none"
+              className="h-8 w-36 shrink-0 rounded-lg border border-border bg-card px-2 text-sm text-foreground outline-none"
             />
           ) : (
           <button
@@ -92,7 +93,7 @@ export function Desk() {
               beginRename(board.id, board.name)
             }}
             className={cn(
-              "group flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors",
+              "group flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors",
               activeBoardId === board.id
                 ? "bg-card text-foreground shadow-sm"
                 : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -145,11 +146,12 @@ export function Desk() {
           </button>
           ),
         )}
+        </div>
         <button
           type="button"
           aria-label={t("desk.newDocument")}
           onClick={addBoard}
-          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="grid size-11 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:size-7"
         >
           <Plus className="size-4" aria-hidden="true" />
         </button>
