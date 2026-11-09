@@ -8,7 +8,7 @@ export const LOCALES: { code: Locale; nativeLabel: string; short: string }[] = [
 ]
 
 export const STORAGE_KEY = "locknlearn.uiLanguage"
-export const DEFAULT_LOCALE: Locale = "az"
+export const DEFAULT_LOCALE: Locale = "en"
 
 export type TranslateVars = Record<string, string | number>
 
@@ -194,6 +194,7 @@ const en = {
     workingNotes: "Working Notes",
     closePanel: "Close panel",
     calculator: "Calculator",
+    problemSubtitle: "Solution and analysis for this document",
     notes: "Notes",
     showTool: "Show {label}",
     hideTool: "Hide {label}",
@@ -463,6 +464,7 @@ const az: Messages = {
     workingNotes: "İş qeydləri",
     closePanel: "Paneli bağla",
     calculator: "Kalkulyator",
+    problemSubtitle: "Sənəd üzrə məsələnin həlli və təhlili",
     notes: "Qeydlər",
     showTool: "{label} göstər",
     hideTool: "{label} gizlət",
@@ -730,6 +732,7 @@ const tr: Messages = {
     workingNotes: "Çalışma notları",
     closePanel: "Paneli kapat",
     calculator: "Hesap makinesi",
+    problemSubtitle: "Belge için çözüm ve analiz",
     notes: "Notlar",
     showTool: "{label} göster",
     hideTool: "{label} gizle",
@@ -997,6 +1000,7 @@ const ru: Messages = {
     workingNotes: "Рабочие заметки",
     closePanel: "Закрыть панель",
     calculator: "Калькулятор",
+    problemSubtitle: "Решение и разбор по документу",
     notes: "Заметки",
     showTool: "Показать: {label}",
     hideTool: "Скрыть: {label}",

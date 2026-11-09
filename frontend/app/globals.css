@@ -421,6 +421,7 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
     width: max-content !important;
     max-width: calc(100% - 1.5rem) !important;
     transform: translateX(-50%) !important;
+    overflow-x: auto;
   }
   .desk-tldraw .tlui-main-toolbar,
   .desk-tldraw .tlui-main-toolbar__inner,
@@ -434,6 +435,22 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
   .desk-tldraw .tlui-main-toolbar__extras {
     display: none !important;
   }
+}
+@media (max-width: 1023px) {
+  .desk-tldraw .desk-selection-toolbar .tlui-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+.desk-tldraw .desk-selection-toolbar .tlui-toolbar {
+  flex-direction: row !important;
+  flex-wrap: nowrap;
+  width: max-content;
+  max-width: none;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
 }
 .chat-fab {
   bottom: calc(5.25rem + env(safe-area-inset-bottom));

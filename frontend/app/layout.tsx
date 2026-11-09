@@ -23,6 +23,9 @@ export const metadata: Metadata = {
   title: 'DelvIn — AI Academic Workspace',
   description:
     'A focused, AI-powered study workspace for students: task tracking, a smart chat tutor, an interactive graph & scientific keypad, and a distraction-free Focus Mode.',
+  other: {
+    google: 'notranslate',
+  },
   icons: {
     icon: [{ url: '/avatar.png', type: 'image/png' }],
     apple: '/avatar.png',
@@ -46,7 +49,8 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`bg-background ${geist.variable} ${spaceGrotesk.variable}`}
+      translate="no"
+      className={`notranslate bg-background ${geist.variable} ${spaceGrotesk.variable}`}
       suppressHydrationWarning
     >
       <body className="font-sans antialiased">

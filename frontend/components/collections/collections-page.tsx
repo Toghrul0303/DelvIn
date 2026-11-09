@@ -29,7 +29,7 @@ type TabId = "formulas" | "bookmarks"
 
 function SavedMath({ source }: { source: string }) {
   return (
-    <div className="overflow-x-auto rounded-xl bg-secondary/70 px-3 py-2 text-sm">
+    <div className="overflow-x-auto rounded-xl bg-secondary/70 px-3 py-2 font-sans text-sm font-medium text-foreground">
       <MathMarkdown remarkPlugins={mathRemarkPlugins} rehypePlugins={mathRehypePlugins}>
         {source}
       </MathMarkdown>
@@ -76,15 +76,15 @@ export function CollectionsPage() {
   }
 
   return (
-    <div className="scroll-slim min-h-dvh overflow-y-auto bg-background text-foreground">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-border bg-background/90 px-6 py-4 backdrop-blur-md">
+    <div className="scroll-slim min-h-dvh overflow-y-auto bg-background font-sans text-foreground">
+      <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-border bg-background/90 px-4 py-3 backdrop-blur-md md:flex-row md:items-center md:justify-between md:px-6 md:py-4">
         <div className="flex items-center gap-3">
           <span className="bg-brand-gradient ring-brand-glow grid size-9 place-items-center rounded-xl text-white">
             <Sparkles className="size-4" aria-hidden="true" />
           </span>
           <div>
-            <h1 className="font-display text-lg font-semibold">{t("collections.title")}</h1>
-            <p className="text-xs text-muted-foreground">
+            <h1 className="font-sans text-lg font-semibold tracking-tight text-foreground">{t("collections.title")}</h1>
+            <p className="font-sans text-sm font-medium text-muted-foreground">
               {t("collections.subtitle")}
             </p>
           </div>
@@ -92,7 +92,7 @@ export function CollectionsPage() {
         <button
           type="button"
           onClick={() => router.push("/workspace")}
-          className="bg-brand-gradient ring-brand-glow flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white transition-transform hover:-translate-y-px"
+          className="bg-brand-gradient ring-brand-glow flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold text-white md:min-h-0 md:py-2"
         >
           <ArrowLeft className="size-4" aria-hidden="true" />
           {t("collections.backToDesk")}
@@ -100,7 +100,7 @@ export function CollectionsPage() {
       </header>
 
       <div className="mx-auto max-w-5xl px-6 py-6">
-        <div className="mb-6 inline-flex rounded-xl border border-border bg-card p-1">
+        <div className="mb-6 inline-flex max-w-full flex-wrap rounded-2xl border border-border bg-card p-1">
           <TabButton
             active={tab === "formulas"}
             onClick={() => setTab("formulas")}
@@ -170,11 +170,11 @@ function TabButton({
       title={title}
       aria-pressed={disabled ? undefined : active}
       className={cn(
-        "flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-colors",
+        "flex items-center gap-2 rounded-xl px-3.5 py-2 font-sans text-sm font-medium transition-colors",
         disabled
           ? "cursor-not-allowed text-muted-foreground/50 opacity-50"
           : active
-            ? "bg-brand-gradient text-white shadow-sm"
+            ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
       )}
     >
@@ -183,8 +183,8 @@ function TabButton({
       {count != null ? (
         <span
           className={cn(
-            "grid min-w-5 place-items-center rounded-full px-1.5 py-0.5 text-[0.7rem] font-bold tabular-nums",
-            active ? "bg-white/20" : "bg-secondary text-muted-foreground",
+            "grid min-w-5 place-items-center rounded-full px-1.5 py-0.5 font-sans text-[0.7rem] font-medium tabular-nums",
+            active ? "bg-foreground/10 text-accent-foreground" : "bg-secondary text-muted-foreground",
           )}
         >
           {count}
@@ -199,7 +199,7 @@ function EmptyState({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
     <div className="grid min-h-[220px] place-items-center rounded-2xl border border-dashed border-border/70 text-center">
       <div className="flex flex-col items-center gap-2 px-6">
         <Icon className="size-6 text-muted-foreground/50" aria-hidden="true" />
-        <p className="text-sm text-muted-foreground text-pretty">{label}</p>
+        <p className="font-sans text-sm font-medium text-muted-foreground text-pretty">{label}</p>
       </div>
     </div>
   )
@@ -225,7 +225,7 @@ function FormulasGrid({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {formulas.map((f) => (
         <div
           key={f.id}
@@ -235,14 +235,14 @@ function FormulasGrid({
             type="button"
             onClick={() => onRemove(f.id)}
             aria-label={t("collections.removeFormula")}
-            className="absolute right-3 top-3 grid size-7 place-items-center rounded-lg text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+            className="absolute right-2 top-2 grid size-11 place-items-center rounded-lg text-muted-foreground hover:bg-destructive/15 hover:text-destructive md:right-3 md:top-3 md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
           >
             <Trash2 className="size-3.5" aria-hidden="true" />
           </button>
 
-          {f.context ? <p className="pr-8 text-sm font-semibold">{f.context}</p> : null}
+          {f.context ? <p className="pr-8 font-sans text-sm font-medium text-foreground">{f.context}</p> : null}
           <SavedMath source={f.formula} />
-          <span className="text-xs font-medium text-muted-foreground">
+          <span className="font-sans text-xs font-medium text-muted-foreground">
             {formatDate(f.savedAt, dateLocale)}
           </span>
         </div>
@@ -271,7 +271,7 @@ function GraphsGrid({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {graphs.map((g) => (
         <div
           key={g.id}
@@ -281,7 +281,7 @@ function GraphsGrid({
             type="button"
             onClick={() => onRemove(g.id)}
             aria-label={t("collections.removeGraph")}
-            className="absolute right-3 top-3 z-10 grid size-7 place-items-center rounded-lg bg-popover/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+            className="absolute right-2 top-2 z-10 grid size-11 place-items-center rounded-lg bg-popover/80 text-muted-foreground shadow-sm backdrop-blur-sm hover:bg-destructive/15 hover:text-destructive md:right-3 md:top-3 md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
           >
             <Trash2 className="size-3.5" aria-hidden="true" />
           </button>
@@ -291,10 +291,10 @@ function GraphsGrid({
           </div>
 
           <div className="flex items-center justify-between px-1">
-            <span className="text-xs font-medium text-muted-foreground">{formatDate(g.savedAt, dateLocale)}</span>
+            <span className="font-sans text-xs font-medium text-muted-foreground">{formatDate(g.savedAt, dateLocale)}</span>
           </div>
           {g.context && (
-            <p className="line-clamp-2 px-1 text-sm leading-relaxed text-muted-foreground text-pretty">
+            <p className="line-clamp-2 px-1 font-sans text-sm font-medium leading-relaxed text-muted-foreground text-pretty">
               {g.context}
             </p>
           )}
@@ -337,11 +337,11 @@ function BookmarksGrid({
           {sessions.map((bookmark) => (
             <div
               key={bookmark.id}
-              className="group relative flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm"
+              className="group relative flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm"
             >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{bookmark.title}</p>
-                <p className="text-xs font-medium text-muted-foreground">
+                <p className="truncate font-sans text-sm font-medium text-foreground">{bookmark.title}</p>
+                <p className="font-sans text-xs font-medium text-muted-foreground">
                   {formatDate(bookmark.savedAt, dateLocale)}
                 </p>
               </div>
@@ -359,7 +359,7 @@ function BookmarksGrid({
                 type="button"
                 onClick={() => onRemove(bookmark.id)}
                 aria-label={t("collections.removeSessionBookmark")}
-                className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+                className="grid size-11 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-destructive/15 hover:text-destructive md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
               </button>
@@ -369,7 +369,7 @@ function BookmarksGrid({
       ) : null}
 
       {questions.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {questions.map((bookmark) => (
             <div
               key={bookmark.id}
@@ -391,13 +391,13 @@ function BookmarksGrid({
                   onRemove(bookmark.id)
                 }}
                 aria-label={t("collections.removeBookmark")}
-                className="absolute right-3 top-3 z-10 grid size-7 place-items-center rounded-lg bg-popover/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+                className="absolute right-2 top-2 z-10 grid size-11 place-items-center rounded-lg bg-popover/80 text-muted-foreground shadow-sm backdrop-blur-sm hover:bg-destructive/15 hover:text-destructive md:right-3 md:top-3 md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
               </button>
-              <p className="pr-8 text-sm font-semibold">{bookmark.title}</p>
+              <p className="pr-8 font-sans text-sm font-medium text-foreground">{bookmark.title}</p>
               {bookmark.prompt ? <SavedMath source={bookmark.prompt} /> : null}
-              <span className="text-xs font-medium text-muted-foreground">
+              <span className="font-sans text-xs font-medium text-muted-foreground">
                 {formatDate(bookmark.savedAt, dateLocale)}
               </span>
             </div>
@@ -406,7 +406,7 @@ function BookmarksGrid({
       ) : null}
 
       {desk.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {desk.map((bookmark) => (
             <div
               key={bookmark.id}
@@ -416,7 +416,7 @@ function BookmarksGrid({
                 type="button"
                 onClick={() => onRemove(bookmark.id)}
                 aria-label={t("collections.removeBookmark")}
-                className="absolute right-3 top-3 z-10 grid size-7 place-items-center rounded-lg bg-popover/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+                className="absolute right-2 top-2 z-10 grid size-11 place-items-center rounded-lg bg-popover/80 text-muted-foreground shadow-sm backdrop-blur-sm hover:bg-destructive/15 hover:text-destructive md:right-3 md:top-3 md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
               </button>
@@ -424,7 +424,7 @@ function BookmarksGrid({
                 <DynamicDeskWidget update={bookmark.item} />
               </div>
               <div className="flex items-center justify-between px-1">
-                <span className="text-xs font-medium text-muted-foreground">
+                <span className="font-sans text-xs font-medium text-muted-foreground">
                   {formatDate(bookmark.savedAt, dateLocale)}
                 </span>
               </div>
@@ -456,7 +456,7 @@ function StrugglesGrid({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {struggles.map((s) => (
         <div
           key={s.id}
@@ -466,7 +466,7 @@ function StrugglesGrid({
             type="button"
             onClick={() => onRemove(s.id)}
             aria-label={t("collections.removeReview")}
-            className="absolute right-3 top-3 grid size-7 place-items-center rounded-lg text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
+            className="absolute right-2 top-2 grid size-11 place-items-center rounded-lg text-muted-foreground hover:bg-destructive/15 hover:text-destructive md:right-3 md:top-3 md:size-7 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
           >
             <Trash2 className="size-3.5" aria-hidden="true" />
           </button>
@@ -475,12 +475,12 @@ function StrugglesGrid({
               <AlertCircle className="size-4" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">{s.topic}</p>
-              <p className="text-xs font-medium text-muted-foreground">{formatDate(s.savedAt, dateLocale)}</p>
+              <p className="truncate font-sans text-sm font-medium text-foreground">{s.topic}</p>
+              <p className="font-sans text-xs font-medium text-muted-foreground">{formatDate(s.savedAt, dateLocale)}</p>
             </div>
           </div>
           {s.excerpt ? (
-            <p className="line-clamp-5 text-sm leading-relaxed text-muted-foreground text-pretty">
+            <p className="line-clamp-5 font-sans text-sm font-medium leading-relaxed text-muted-foreground text-pretty">
               {s.excerpt}
             </p>
           ) : null}

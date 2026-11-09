@@ -15,9 +15,11 @@ const THEME_OPTIONS: { id: ThemePreference; label: "settings.systemDefault" | "n
 export function SettingsMenu({
   open,
   onOpenChange,
+  showTimerToggle = true,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  showTimerToggle?: boolean
 }) {
   const { t } = useLanguage()
   const { theme, setTheme, showTimer, setShowTimer } = useMode()
@@ -116,6 +118,7 @@ export function SettingsMenu({
               })}
             </div>
           ) : null}
+          {showTimerToggle ? (
           <button
             type="button"
             role="switch"
@@ -138,6 +141,7 @@ export function SettingsMenu({
               />
             </span>
           </button>
+          ) : null}
         </div>
       ) : null}
     </div>

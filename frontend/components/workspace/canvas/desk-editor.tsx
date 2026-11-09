@@ -1,15 +1,20 @@
 "use client"
 
-import { memo, useCallback, useRef } from "react"
+import { memo, useCallback, useRef, type MouseEvent, type PointerEvent } from "react"
 import {
   DefaultContextMenu,
   DefaultToolbar,
   DrawToolbarItem,
+  EraserToolbarItem,
   HandToolbarItem,
   SelectToolbarItem,
   TextToolbarItem,
+  TldrawUiButtonIcon,
+  TldrawUiContextualToolbar,
   TldrawUiToolbarButton,
+  useActions,
   useEditor,
+  useTranslation,
   useValue,
   type Editor,
   type TLComponents,
@@ -87,10 +92,11 @@ function SlimToolbar() {
   )
 
   return (
-    <DefaultToolbar orientation={mobile ? "horizontal" : "vertical"} minItems={6} maxItems={6}>
+    <DefaultToolbar orientation={mobile ? "horizontal" : "vertical"} minItems={7} maxItems={7}>
       <SelectToolbarItem />
       <HandToolbarItem />
       <DrawToolbarItem />
+      <EraserToolbarItem />
       <TextToolbarItem />
       <TldrawUiToolbarButton
         type="tool"
@@ -116,9 +122,79 @@ function SlimToolbar() {
   )
 }
 
+function useSingleTap(onAction: () => void) {
+  const gesture = useRef({ ran: false })
+  const onPointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    gesture.current.ran = false
+  }, [])
+  const onClick = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.detail === 0) {
+        onAction()
+        return
+      }
+      if (gesture.current.ran) return
+      gesture.current.ran = true
+      onAction()
+    },
+    [onAction],
+  )
+  return { onPointerDown, onClick }
+}
+
+function DeskTapButton({
+  title,
+  icon,
+  onAction,
+}: {
+  title: string
+  icon: "trash" | "duplicate"
+  onAction: () => void
+}) {
+  const handlers = useSingleTap(onAction)
+  return (
+    <TldrawUiToolbarButton type="icon" title={title} {...handlers}>
+      <TldrawUiButtonIcon icon={icon} />
+    </TldrawUiToolbarButton>
+  )
+}
+
+function SelectionActionsToolbar() {
+  const editor = useEditor()
+  const actions = useActions()
+  const msg = useTranslation()
+  const show = useValue(
+    "selection-actions",
+    () => editor.getSelectedShapeIds().length > 0 && editor.isIn("select.idle"),
+    [editor],
+  )
+  const getSelectionBounds = useCallback(() => editor.getSelectionScreenBounds(), [editor])
+  const deleteSelection = useCallback(() => {
+    void actions.delete?.onSelect("actions-menu")
+  }, [actions])
+  const duplicateSelection = useCallback(() => {
+    void actions.duplicate?.onSelect("actions-menu")
+  }, [actions])
+  if (!show) return null
+  return (
+    <TldrawUiContextualToolbar
+      className="desk-selection-toolbar"
+      getSelectionBounds={getSelectionBounds}
+      label="Selection actions"
+    >
+      <DeskTapButton title={msg("action.delete")} icon="trash" onAction={deleteSelection} />
+      <DeskTapButton title={msg("action.duplicate")} icon="duplicate" onAction={duplicateSelection} />
+    </TldrawUiContextualToolbar>
+  )
+}
+
 const deskTldrawComponents: TLComponents = {
   Toolbar: SlimToolbar,
   ContextMenu: DeskGeneratedContextMenu,
+  InFrontOfTheCanvas: SelectionActionsToolbar,
   MainMenu: null,
   HelpMenu: null,
   PageMenu: null,
@@ -142,7 +218,7 @@ const deskTldrawComponents: TLComponents = {
 
 const deskUiOverrides: TLUiOverrides = {
   tools(_editor, tools) {
-    const keep = new Set(["select", "hand", "draw", "text"])
+    const keep = new Set(["select", "hand", "draw", "eraser", "text"])
     for (const id of Object.keys(tools)) {
       if (!keep.has(id)) delete tools[id]
     }

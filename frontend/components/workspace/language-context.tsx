@@ -12,7 +12,6 @@ import {
 import {
   DEFAULT_LOCALE,
   STORAGE_KEY,
-  detectNavigatorLocale,
   isLocale,
   translate,
   type Locale,
@@ -44,11 +43,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     } catch {
       /* private browsing */
     }
-    setLocaleState(detectNavigatorLocale())
   }, [])
 
   useEffect(() => {
-    document.documentElement.lang = locale
+    document.documentElement.lang = "en"
   }, [locale])
 
   const setLocale = useCallback((next: Locale) => {

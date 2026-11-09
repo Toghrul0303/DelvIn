@@ -24,7 +24,7 @@ export function PricingPlanButton({ name }: { name: string }) {
       <button
         type="button"
         disabled
-        className="mt-7 w-full cursor-default rounded-full border border-[#ddd8e5] bg-white py-3 text-sm font-semibold text-[#554f61]"
+        className="mt-7 w-full cursor-default rounded-full border border-border bg-card py-3 text-sm font-semibold text-foreground"
       >
         Current plan
       </button>
@@ -69,11 +69,11 @@ export function PricingPlanButton({ name }: { name: string }) {
         type="button"
         disabled={pending || loading}
         onClick={() => void upgrade()}
-        className="w-full rounded-full bg-[#ba2b8a] py-3 text-sm font-semibold text-white shadow-lg shadow-[#ba2b8a]/20 transition hover:-translate-y-0.5 hover:bg-[#a7247e] disabled:cursor-wait disabled:opacity-70"
+        className="w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground shadow-lg transition hover:-translate-y-0.5 hover:bg-primary/90 disabled:cursor-wait disabled:opacity-70"
       >
         {pending ? "Redirecting…" : "Upgrade now"}
       </button>
-      {error ? <p className="mt-2 text-center text-xs text-[#a7247e]">{error}</p> : null}
+      {error ? <p className="mt-2 text-center text-xs text-primary">{error}</p> : null}
     </div>
   )
 }

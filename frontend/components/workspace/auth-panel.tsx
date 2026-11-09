@@ -86,7 +86,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         type="button"
         disabled={busy}
         onClick={() => void onGoogle()}
-        className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card text-sm font-semibold text-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card text-sm font-semibold text-foreground hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 md:h-10"
       >
         <GoogleMark />
         {t("sidebar.continueWithGoogle")}
@@ -102,7 +102,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         autoComplete="email"
         required
         placeholder={t("sidebar.email")}
-        className="h-10 rounded-xl border border-border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-primary/50"
+        className="h-11 rounded-xl border border-border bg-background px-3 text-base font-medium outline-none placeholder:text-muted-foreground focus:border-primary/50 md:h-10 md:text-sm"
       />
       <input
         type="password"
@@ -111,7 +111,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         required
         minLength={6}
         placeholder={t("sidebar.password")}
-        className="h-10 rounded-xl border border-border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-primary/50"
+        className="h-11 rounded-xl border border-border bg-background px-3 text-base font-medium outline-none placeholder:text-muted-foreground focus:border-primary/50 md:h-10 md:text-sm"
       />
       <div className="flex justify-end">
         <Link
@@ -130,7 +130,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
           value="in"
           disabled={busy}
           className={cn(
-            "bg-brand-gradient h-10 flex-1 rounded-xl text-sm font-semibold text-white",
+            "bg-brand-gradient h-11 flex-1 rounded-xl text-sm font-semibold text-white md:h-10",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
         >
@@ -141,7 +141,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
           name="mode"
           value="up"
           disabled={busy}
-          className="h-10 flex-1 rounded-xl border border-border bg-card text-sm font-semibold text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-11 flex-1 rounded-xl border border-border bg-card text-sm font-semibold text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 md:h-10"
         >
           {t("sidebar.signUp")}
         </button>

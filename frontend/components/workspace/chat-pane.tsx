@@ -105,8 +105,6 @@ function isGenericUserPrompt(query: string): boolean {
   )
 }
 
-const DEFAULT_PROBLEM_SUBTITLE = "Sənəd üzrə məsələnin həlli və təhlili"
-
 /** Builds the Desk's "Active problem" header — but ONLY ever called when a
  * Desk visual (chart/calculation) was actually generated this turn. Prefers
  * the chart's own AI-authored `title` (already short & on-topic); falls back
@@ -115,7 +113,8 @@ const DEFAULT_PROBLEM_SUBTITLE = "Sənəd üzrə məsələnin həlli və təhlil
 function buildActiveProblemFromDeskUpdate(
   update: DeskUpdate,
   rawQuery: string,
-  fileName?: string | null,
+  fileName: string | null | undefined,
+  fallback: string,
 ): ActiveProblem {
   const trimmedQuery = rawQuery.trim()
   const generic = isGenericUserPrompt(trimmedQuery)
@@ -128,7 +127,7 @@ function buildActiveProblemFromDeskUpdate(
     "summary" in update && typeof update.summary === "string" ? update.summary.trim() : ""
 
   const description = generic
-    ? summary || DEFAULT_PROBLEM_SUBTITLE
+    ? summary || fallback
     : userFacingProblemText(trimmedQuery)
       ? fileName
         ? `${userFacingProblemText(trimmedQuery)} (with attachment: ${fileName})`
@@ -137,7 +136,7 @@ function buildActiveProblemFromDeskUpdate(
 
   return {
     title: userFacingProblemText(smartTitle) || (fileName ? fileName.replace(/\.[^.]+$/, "") : "New Workspace result"),
-    description: userFacingProblemText(description) || DEFAULT_PROBLEM_SUBTITLE,
+    description: userFacingProblemText(description) || fallback,
   }
 }
 
@@ -1374,7 +1373,14 @@ export function ChatPane({
           // ignored here so a Why?/How? click doesn't steal the active problem.
           // Never feed the internal `[TASK START]` routing prompt into titles.
           if (!silent && isDeskUpdate(update)) {
-            setActiveProblem(buildActiveProblemFromDeskUpdate(update, publicQuery, fileToSend?.name))
+            setActiveProblem(
+              buildActiveProblemFromDeskUpdate(
+                update,
+                publicQuery,
+                fileToSend?.name,
+                t("desk.problemSubtitle"),
+              ),
+            )
           }
         },
         onActiveProblemUpdate: (problem) => {
