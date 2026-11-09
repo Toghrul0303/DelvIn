@@ -2,12 +2,10 @@
 
 import { useEffect, useId, useRef, useState } from "react"
 import Link from "next/link"
-import { Monitor, Moon, Sun } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
 import { useAuth } from "./auth-context"
 import { useLanguage } from "./language-context"
-import { useMode, type ThemePreference } from "./mode-context"
 
 type PlanName = "free" | "pro" | "premium"
 
@@ -74,19 +72,36 @@ function usageFromRow(row: SubscriptionRow | null): UsageView {
   }
 }
 
-const THEME_OPTIONS: { id: ThemePreference; icon: typeof Sun; label: "nav.light" | "nav.dark" | "nav.system" }[] = [
-  { id: "light", icon: Sun, label: "nav.light" },
-  { id: "dark", icon: Moon, label: "nav.dark" },
-  { id: "system", icon: Monitor, label: "nav.system" },
-]
+function QuotaBar({ label, used, cap }: { label: string; used: number; cap: number }) {
+  const width = cap > 0 ? Math.min(100, (used / cap) * 100) : 0
+  return (
+    <div>
+      <p className="mb-1 text-muted-foreground">{label}</p>
+      <div
+        className="h-1.5 overflow-hidden rounded-full bg-secondary"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={cap}
+        aria-valuenow={Math.min(used, cap)}
+        aria-label={label}
+      >
+        <div className="h-full rounded-full bg-primary" style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  )
+}
 
-export function AccountMenu() {
+export function AccountMenu({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
   const { user, signOut } = useAuth()
   const { t } = useLanguage()
-  const { theme, setTheme } = useMode()
   const panelId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
-  const [open, setOpen] = useState(false)
   const [usageState, setUsageState] = useState<LoadState>({ status: "loading" })
   const [pendingPortal, setPendingPortal] = useState(false)
   const [portalFailed, setPortalFailed] = useState(false)
@@ -96,10 +111,13 @@ export function AccountMenu() {
     if (!open) return
     const onPointer = (event: MouseEvent) => {
       if (rootRef.current?.contains(event.target as Node)) return
-      setOpen(false)
+      onOpenChange(false)
     }
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false)
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      event.stopPropagation()
+      onOpenChange(false)
     }
     document.addEventListener("mousedown", onPointer)
     document.addEventListener("keydown", onKey)
@@ -107,7 +125,7 @@ export function AccountMenu() {
       document.removeEventListener("mousedown", onPointer)
       document.removeEventListener("keydown", onKey)
     }
-  }, [open])
+  }, [open, onOpenChange])
 
   useEffect(() => {
     if (!open || !user) return
@@ -187,7 +205,7 @@ export function AccountMenu() {
         aria-expanded={open}
         aria-controls={panelId}
         aria-label={t("account.open")}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => onOpenChange(!open)}
         className="grid size-11 place-items-center rounded-full border border-border bg-card text-xs font-semibold text-foreground shadow-sm transition-colors hover:border-primary/40 md:size-8"
       >
         {initial}
@@ -199,46 +217,33 @@ export function AccountMenu() {
           aria-label={t("account.open")}
           className="absolute right-0 z-50 mt-2 w-[min(17rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-card p-3 text-xs shadow-sm"
         >
-          <div
-            role="radiogroup"
-            aria-label={t("nav.appearance")}
-            className="mb-3 grid grid-cols-3 gap-1 rounded-lg bg-secondary p-1"
-          >
-            {THEME_OPTIONS.map((option) => {
-              const Icon = option.icon
-              const selected = theme === option.id
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => setTheme(option.id)}
-                  className={cn(
-                    "flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[0.65rem] font-semibold leading-tight",
-                    selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <Icon className="size-3.5" aria-hidden="true" />
-                  {t(option.label)}
-                </button>
-              )
-            })}
-          </div>
-          <div className="space-y-1 text-muted-foreground">
+          <div className="space-y-2.5">
+            {user.email ? (
+              <p className="truncate font-medium text-foreground" title={user.email}>
+                {user.email}
+              </p>
+            ) : null}
             {usageState.status === "loading" ? (
-              <p aria-hidden="true">…</p>
+              <p aria-hidden="true" className="text-muted-foreground">…</p>
             ) : usageState.status === "error" || !usage ? (
-              <p>{t("account.usageUnavailable")}</p>
+              <p className="text-muted-foreground">{t("account.usageUnavailable")}</p>
             ) : (
               <>
                 <p className="font-medium text-foreground">{t("account.plan", { name: planLabel })}</p>
-                <p>
-                  {usage.textCap == null
-                    ? t("account.textUnlimited")
-                    : t("account.textToday", { used: usage.textUsed, cap: usage.textCap })}
-                </p>
-                <p>{t("account.visionMonth", { used: usage.visionUsed, cap: usage.visionCap })}</p>
+                {usage.textCap == null ? (
+                  <p className="text-muted-foreground">{t("account.textUnlimited")}</p>
+                ) : (
+                  <QuotaBar
+                    label={t("account.textToday", { used: usage.textUsed, cap: usage.textCap })}
+                    used={usage.textUsed}
+                    cap={usage.textCap}
+                  />
+                )}
+                <QuotaBar
+                  label={t("account.visionMonth", { used: usage.visionUsed, cap: usage.visionCap })}
+                  used={usage.visionUsed}
+                  cap={usage.visionCap}
+                />
               </>
             )}
           </div>

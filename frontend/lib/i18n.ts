@@ -271,6 +271,12 @@ const en = {
     expand: "Expand focus music player",
     collapse: "Collapse focus music player",
   },
+  settings: {
+    open: "Settings",
+    theme: "Theme",
+    systemDefault: "System default",
+    showTimer: "Show timer",
+  },
 }
 
 export type Messages = typeof en
@@ -534,6 +540,12 @@ const az: Messages = {
     expand: "Fokus pleyerini aç",
     collapse: "Fokus pleyerini yığ",
   },
+  settings: {
+    open: "Parametrlər",
+    theme: "Tema",
+    systemDefault: "Sistem standartı",
+    showTimer: "Taymeri göstər",
+  },
 }
 
 const tr: Messages = {
@@ -795,6 +807,12 @@ const tr: Messages = {
     expand: "Odak oynatıcısını aç",
     collapse: "Odak oynatıcısını daralt",
   },
+  settings: {
+    open: "Ayarlar",
+    theme: "Tema",
+    systemDefault: "Sistem varsayılanı",
+    showTimer: "Zamanlayıcıyı göster",
+  },
 }
 
 const ru: Messages = {
@@ -1055,6 +1073,12 @@ const ru: Messages = {
     close: "Закрыть плеер",
     expand: "Развернуть плеер",
     collapse: "Свернуть плеер",
+  },
+  settings: {
+    open: "Настройки",
+    theme: "Тема",
+    systemDefault: "Как в системе",
+    showTimer: "Показать таймер",
   },
 }
 

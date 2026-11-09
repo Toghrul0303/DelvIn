@@ -1,11 +1,14 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Space_Grotesk } from 'next/font/google'
+import Script from 'next/script'
 import './globals.css'
 import { LanguageProvider } from '@/components/workspace/language-context'
 import { AuthProvider } from '@/components/workspace/auth-context'
 import { MemoryBoxProvider } from '@/components/workspace/memory-box-context'
 import { MemoryBoxToast } from '@/components/workspace/memory-box-toast'
+import { ThemeProvider } from '@/components/workspace/mode-context'
+import { THEME_INIT_SCRIPT } from '@/lib/theme-init'
 
 // Swapped from Inter — Geist Sans reads noticeably heavier/more legible at
 // body-copy sizes on the Desk/chat pane while keeping the same clean,
@@ -44,16 +47,22 @@ export default function RootLayout({
     <html
       lang="en"
       className={`bg-background ${geist.variable} ${spaceGrotesk.variable}`}
+      suppressHydrationWarning
     >
       <body className="font-sans antialiased">
-        <LanguageProvider>
-          <AuthProvider>
-            <MemoryBoxProvider>
-              {children}
-              <MemoryBoxToast />
-            </MemoryBoxProvider>
-          </AuthProvider>
-        </LanguageProvider>
+        <Script id="locknlearn-theme" strategy="beforeInteractive">
+          {THEME_INIT_SCRIPT}
+        </Script>
+        <ThemeProvider>
+          <LanguageProvider>
+            <AuthProvider>
+              <MemoryBoxProvider>
+                {children}
+                <MemoryBoxToast />
+              </MemoryBoxProvider>
+            </AuthProvider>
+          </LanguageProvider>
+        </ThemeProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

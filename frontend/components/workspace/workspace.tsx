@@ -1,10 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { cn } from "@/lib/utils"
 import { useAuth } from "./auth-context"
-import { ModeContext, type ThemePreference } from "./mode-context"
 import { TopNavbar } from "./top-navbar"
 import { LeftSidebar } from "./left-sidebar"
 import { Desk } from "./desk"
@@ -19,22 +17,8 @@ import { ExplainModeProvider } from "./explain-mode-context"
 import { WhiteboardProvider } from "./canvas/whiteboard-context"
 import { useLanguage } from "./language-context"
 
-const THEME_KEY = "locknlearn.theme"
+export type ActiveMenu = "drawer" | "chat" | "account" | "settings" | null
 
-function readTheme(): ThemePreference {
-  const stored = window.localStorage.getItem(THEME_KEY)
-  if (stored === "dark" || stored === "light" || stored === "system") return stored
-  return "light"
-}
-
-function prefersDark() {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-}
-
-function resolveDark(theme: ThemePreference) {
-  if (theme === "system") return prefersDark()
-  return theme === "dark"
-}
 const CHAT_WIDTH_KEY = "locknlearn.chatWidth"
 const CHAT_WIDTH_DEFAULT = 400
 const CHAT_WIDTH_MIN = 360
@@ -49,17 +33,14 @@ export function Workspace() {
   const router = useRouter()
   const { t } = useLanguage()
   const { user, loading: authLoading } = useAuth()
-  const [theme, setThemeState] = useState<ThemePreference>("light")
-  const [dark, setDark] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [activeMenu, setActiveMenu] = useState<ActiveMenu>(null)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
+  const activeMenuRef = useRef(activeMenu)
+  activeMenuRef.current = activeMenu
 
   useEffect(() => {
-    const next = readTheme()
-    setThemeState(next)
-    setDark(resolveDark(next))
     const stored = Number(window.localStorage.getItem(CHAT_WIDTH_KEY))
     if (Number.isFinite(stored) && stored > 0) setChatWidth(clampChatWidth(stored))
     if (window.matchMedia("(max-width: 767px)").matches) setChatCollapsed(true)
@@ -69,21 +50,14 @@ export function Workspace() {
   }, [])
 
   useEffect(() => {
-    if (theme !== "system") return
-    const media = window.matchMedia("(prefers-color-scheme: dark)")
-    const apply = () => setDark(media.matches)
-    apply()
-    media.addEventListener("change", apply)
-    return () => media.removeEventListener("change", apply)
-  }, [theme])
-
-  useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)")
-    const closeDrawer = () => {
-      if (media.matches) setDrawerOpen(false)
+    const clearMobileOverlays = () => {
+      if (!media.matches) return
+      if (activeMenuRef.current === "chat") setChatCollapsed(false)
+      setActiveMenu((current) => (current === "drawer" || current === "chat" ? null : current))
     }
-    media.addEventListener("change", closeDrawer)
-    return () => media.removeEventListener("change", closeDrawer)
+    media.addEventListener("change", clearMobileOverlays)
+    return () => media.removeEventListener("change", clearMobileOverlays)
   }, [])
 
   useEffect(() => {
@@ -102,35 +76,38 @@ export function Workspace() {
     window.localStorage.setItem(CHAT_WIDTH_KEY, String(next))
   }, [])
 
-  const setTheme = useCallback((next: ThemePreference) => {
-    setThemeState(next)
-    setDark(resolveDark(next))
-    window.localStorage.setItem(THEME_KEY, next)
-  }, [])
-
   const toggleDrawer = useCallback(() => {
-    setDrawerOpen((open) => {
-      const next = !open
-      if (next) setChatCollapsed(true)
-      return next
-    })
+    setActiveMenu((current) => (current === "drawer" ? null : "drawer"))
   }, [])
 
   const toggleChat = useCallback(() => {
-    setChatCollapsed((collapsed) => {
-      const next = !collapsed
-      if (!next) setDrawerOpen(false)
-      return next
-    })
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setActiveMenu((current) => (current === "chat" ? null : "chat"))
+      return
+    }
+    setChatCollapsed((collapsed) => !collapsed)
   }, [])
 
   const openChat = useCallback(() => {
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setActiveMenu("chat")
+      return
+    }
     setChatCollapsed(false)
-    setDrawerOpen(false)
   }, [])
 
-  const closeChat = useCallback(() => setChatCollapsed(true), [])
-  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
+  const closeChat = useCallback(() => {
+    setActiveMenu((current) => (current === "chat" ? null : current))
+  }, [])
+  const closeDrawer = useCallback(() => {
+    setActiveMenu((current) => (current === "drawer" ? null : current))
+  }, [])
+  const setAccountOpen = useCallback((open: boolean) => {
+    setActiveMenu(open ? "account" : null)
+  }, [])
+  const setSettingsOpen = useCallback((open: boolean) => {
+    setActiveMenu(open ? "settings" : null)
+  }, [])
 
   useEffect(() => {
     if (authLoading || user) return
@@ -140,7 +117,6 @@ export function Workspace() {
   if (authLoading || !user) return null
 
   return (
-    <ModeContext.Provider value={{ dark, theme, setTheme }}>
       <SessionProvider>
       <TaskTrackerProvider>
       <DeskProvider>
@@ -148,7 +124,7 @@ export function Workspace() {
       <StudyModeProvider>
       <ExplainModeProvider>
         <SessionSliceSync />
-        <div className={cn("h-dvh w-full overflow-hidden", dark && "dark")}>
+        <div className="h-dvh w-full overflow-hidden">
         <div className="relative flex h-full flex-col bg-background text-foreground">
           <div
             aria-hidden="true"
@@ -160,7 +136,14 @@ export function Workspace() {
           />
 
           <div className="relative z-10 flex h-full flex-col">
-            <TopNavbar menuOpen={drawerOpen} onMenuToggle={toggleDrawer} />
+            <TopNavbar
+              menuOpen={activeMenu === "drawer"}
+              onMenuToggle={toggleDrawer}
+              accountOpen={activeMenu === "account"}
+              settingsOpen={activeMenu === "settings"}
+              onAccountOpenChange={setAccountOpen}
+              onSettingsOpenChange={setSettingsOpen}
+            />
 
             <div className="flex min-h-0 flex-1">
               <LeftSidebar
@@ -174,7 +157,7 @@ export function Workspace() {
 
               <MobileSheet
                 side="bottom"
-                open={!chatCollapsed}
+                open={activeMenu === "chat"}
                 onClose={closeChat}
                 label={t("chat.aria")}
                 columnWidth={chatWidth}
@@ -192,7 +175,7 @@ export function Workspace() {
             <MobileSheet
               id="workspace-drawer"
               side="left"
-              open={drawerOpen}
+              open={activeMenu === "drawer"}
               onClose={closeDrawer}
               label={t("sidebar.workspace")}
             >
@@ -203,7 +186,11 @@ export function Workspace() {
                 onNavigate={closeDrawer}
               />
             </MobileSheet>
-            <ChatCollapseFab collapsed={chatCollapsed} concealed={drawerOpen} onExpand={openChat} />
+            <ChatCollapseFab
+              collapsed={activeMenu === "chat" ? false : chatCollapsed}
+              concealed={activeMenu === "drawer"}
+              onExpand={openChat}
+            />
           </div>
         </div>
       </div>
@@ -213,6 +200,5 @@ export function Workspace() {
       </DeskProvider>
       </TaskTrackerProvider>
       </SessionProvider>
-    </ModeContext.Provider>
   )
 }

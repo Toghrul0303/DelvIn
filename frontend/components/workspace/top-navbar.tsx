@@ -2,8 +2,8 @@
 
 import Link from "next/link"
 import { Menu, X } from "lucide-react"
-import { cn } from "@/lib/utils"
 import { AccountMenu } from "./account-menu"
+import { SettingsMenu } from "./settings-menu"
 import { NAV_TABS } from "./data"
 import { useLanguage } from "./language-context"
 
@@ -14,13 +14,13 @@ function Logo() {
       <img
         src="/DelvIn_light_mode_transparent.png"
         alt="DelvIn"
-        className="h-6 max-h-6 w-auto max-w-[34vw] shrink-0 object-contain md:max-w-none dark:hidden"
+        className="h-6 max-h-6 w-auto max-w-[30vw] shrink-0 object-contain md:max-w-none dark:hidden"
       />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/DelvIn_dark_mode_transparent.png"
         alt=""
-        className="hidden h-6 max-h-6 w-auto max-w-[34vw] shrink-0 object-contain md:max-w-none dark:block"
+        className="hidden h-6 max-h-6 w-auto max-w-[30vw] shrink-0 object-contain md:max-w-none dark:block"
       />
     </>
   )
@@ -52,9 +52,17 @@ function Tabs() {
 export function TopNavbar({
   menuOpen = false,
   onMenuToggle,
+  accountOpen,
+  settingsOpen,
+  onAccountOpenChange,
+  onSettingsOpenChange,
 }: {
   menuOpen?: boolean
   onMenuToggle?: () => void
+  accountOpen: boolean
+  settingsOpen: boolean
+  onAccountOpenChange: (open: boolean) => void
+  onSettingsOpenChange: (open: boolean) => void
 }) {
   const { t } = useLanguage()
   return (
@@ -77,8 +85,9 @@ export function TopNavbar({
         <Logo />
       </div>
 
-      <div className={cn("ml-auto flex items-center")}>
-        <AccountMenu />
+      <div className="ml-auto flex items-center gap-0.5">
+        <SettingsMenu open={settingsOpen} onOpenChange={onSettingsOpenChange} />
+        <AccountMenu open={accountOpen} onOpenChange={onAccountOpenChange} />
       </div>
     </header>
   )
