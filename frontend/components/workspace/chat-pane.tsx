@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type RefObject } from "react"
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MutableRefObject, type ReactNode, type RefObject } from "react"
 import { useRouter } from "next/navigation"
 import { createPortal } from "react-dom"
 import {
@@ -622,6 +622,10 @@ function isPdfFile(file: File) {
   return /pdf/i.test(file.type || file.name)
 }
 
+function dragHasFiles(event: DragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes("Files")
+}
+
 function pdfUploadKey(threadId: string, file: File) {
   return `${threadId}:${file.name}:${file.size}:${file.lastModified}`
 }
@@ -689,6 +693,7 @@ export function ChatPane({
   const [input, setInput] = useState("")
   const [saved, setSaved] = useState<Record<string, boolean>>({})
   const [attachedFile, setAttachedFile] = useState<File | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [pipelineStatus, setPipelineStatus] = useState("")
   const [highlightAsk, setHighlightAsk] = useState<HighlightAsk | null>(null)
@@ -938,6 +943,55 @@ export function ChatPane({
     setPendingFileBound(false)
     discardPdfUpload()
     setAttachedFile(named)
+  }
+
+  const attachComposerFile = (file: File) => {
+    pendingFileRef.current = null
+    setPendingFileBound(false)
+    if (file.type.startsWith("image/")) {
+      attachImageFile(file)
+    } else if (isPdfFile(file)) {
+      setAttachedFile(file)
+      beginPdfUpload(file)
+    } else {
+      discardPdfUpload()
+      setAttachedFile(file)
+    }
+  }
+
+  const chatClosed = !mobile && collapsed
+
+  const onChatDragEnter = (event: DragEvent<HTMLElement>) => {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    if (chatClosed || isSending) return
+    setIsDragging(true)
+  }
+
+  const onChatDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = chatClosed || isSending ? "none" : "copy"
+    if (!chatClosed && !isSending) setIsDragging(true)
+  }
+
+  const onChatDragLeave = (event: DragEvent<HTMLElement>) => {
+    const next = event.relatedTarget
+    if (next instanceof Node && event.currentTarget.contains(next)) return
+    setIsDragging(false)
+  }
+
+  const onChatDrop = (event: DragEvent<HTMLElement>) => {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    setIsDragging(false)
+    if (chatClosed || isSending) return
+    const file = event.dataTransfer.files?.[0]
+    if (file) attachComposerFile(file)
+  }
+
+  const onChatDragEnd = () => {
+    setIsDragging(false)
   }
 
   const markMessageAborted = (id: string) => {
@@ -1906,6 +1960,11 @@ export function ChatPane({
   return (
     <aside
       aria-label={t("chat.aria")}
+      onDragEnter={onChatDragEnter}
+      onDragOver={onChatDragOver}
+      onDragLeave={onChatDragLeave}
+      onDrop={onChatDrop}
+      onDragEnd={onChatDragEnd}
       className={cn(
         "flex min-h-0 w-full shrink-0 flex-col bg-card/40",
         mobile
@@ -2101,21 +2160,7 @@ export function ChatPane({
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0] ?? null
-              if (!file) {
-                e.target.value = ""
-                return
-              }
-              pendingFileRef.current = null
-              setPendingFileBound(false)
-              if (file.type.startsWith("image/")) {
-                attachImageFile(file)
-              } else if (isPdfFile(file)) {
-                setAttachedFile(file)
-                beginPdfUpload(file)
-              } else {
-                discardPdfUpload()
-                setAttachedFile(file)
-              }
+              if (file) attachComposerFile(file)
               e.target.value = ""
             }}
           />
@@ -2227,6 +2272,14 @@ export function ChatPane({
           </button>
         </div>
       </div>
+      {isDragging && !chatClosed ? (
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-md">
+          <div className="flex flex-col items-center gap-3 text-foreground">
+            <Paperclip className="size-8" aria-hidden="true" />
+            <p className="text-sm font-semibold">{t("chat.dropFiles")}</p>
+          </div>
+        </div>
+      ) : null}
     </aside>
   )
 }
