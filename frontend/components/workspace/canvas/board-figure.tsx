@@ -143,7 +143,7 @@ export class BoardFigureShapeUtil extends BaseBoxShapeUtil<IBoardFigureShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {

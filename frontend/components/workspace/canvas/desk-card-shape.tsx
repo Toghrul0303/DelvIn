@@ -19,6 +19,7 @@ import { DynamicDeskWidget } from "../dynamic-desk-widget"
 import { useDesk, type DeskItem } from "../desk-context"
 import { useMemoryBox } from "../memory-box-context"
 import { useLanguage } from "../language-context"
+import { onProseTouchStart } from "./board-math"
 
 declare module "@tldraw/tlschema" {
   interface TLGlobalShapePropsMap {
@@ -160,6 +161,7 @@ function DeskCardBody({ shape }: { shape: IDeskCardShape }) {
           aria-label={item.bookmarked ? t("desk.savedBookmark") : t("desk.saveBookmark")}
           disabled={item.bookmarked}
           onPointerDown={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
           onClick={handleSave}
           className={cn(
             "grid size-6 place-items-center rounded-md bg-popover/90 shadow-sm backdrop-blur-sm transition-colors",
@@ -176,6 +178,7 @@ function DeskCardBody({ shape }: { shape: IDeskCardShape }) {
           type="button"
           aria-label={t("desk.removeCard")}
           onPointerDown={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
           onClick={handleRemove}
           className="grid size-6 place-items-center rounded-md bg-popover/90 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:text-destructive"
         >
@@ -186,6 +189,7 @@ function DeskCardBody({ shape }: { shape: IDeskCardShape }) {
         <div
           className="desk-artifact flex h-full items-center gap-2 rounded-2xl border border-border bg-card/90 px-4 shadow-sm"
           data-highlight-source=""
+          onTouchStart={(event) => onProseTouchStart(editor, event)}
         >
           <span className="bg-brand-gradient grid size-8 shrink-0 place-items-center rounded-lg text-white">
             <CardIcon item={item} />
@@ -202,6 +206,7 @@ function DeskCardBody({ shape }: { shape: IDeskCardShape }) {
             if (target?.closest("[data-desk-card-drag]")) return
             event.stopPropagation()
           }}
+          onTouchStart={(event) => onProseTouchStart(editor, event)}
         >
           <DynamicDeskWidget update={item} />
         </div>
@@ -238,7 +243,7 @@ export class DeskCardShapeUtil extends BaseBoxShapeUtil<IDeskCardShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {

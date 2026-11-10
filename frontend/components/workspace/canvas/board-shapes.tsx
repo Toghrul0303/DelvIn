@@ -1,6 +1,14 @@
 "use client"
 
-import { useEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  type TouchEvent,
+} from "react"
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
@@ -20,7 +28,7 @@ import { notifyQuestionPainted, useDesk } from "../desk-context"
 import { useLanguage } from "../language-context"
 import { useMemoryBox, type QuestionClusterShape } from "../memory-box-context"
 import { BoardChartPlot } from "./board-chart-plot"
-import { BoardRichText, formatBoardValue, onMathPointerDown } from "./board-math"
+import { BoardRichText, formatBoardValue, onMathPointerDown, onProseTouchStart } from "./board-math"
 import {
   BOARD_BRANCH_TYPE,
   BOARD_CHART_TYPE,
@@ -69,6 +77,14 @@ const REMEASURE_DELAYS_MS = [80, 240, 640]
 
 const CARD_CLASS =
   "box-border flex w-full flex-col gap-2 rounded-xl border border-black/[0.08] bg-card px-3 py-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]"
+
+function onBoardActionTouch(
+  editor: Editor,
+  event: PointerEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>,
+) {
+  event.stopPropagation()
+  editor.markEventAsHandled(event)
+}
 
 export type IBoardQuestionShape = TLShape<"board-question">
 export type IBoardStepShape = TLShape<"board-step">
@@ -379,6 +395,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
             data-shape-id={shape.id}
             style={{ pointerEvents: "all", userSelect: "text" }}
             onPointerDown={onMathPointerDown}
+            onTouchStart={(event) => onProseTouchStart(editor, event)}
             className="min-w-0 truncate text-[13px] font-medium text-muted-foreground"
           >
             {title}
@@ -392,6 +409,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               className="board-action"
               style={{ pointerEvents: "all" }}
               onPointerDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
               onClick={onFlagClick}
             >
               <Bookmark className="size-3.5" aria-hidden="true" />
@@ -401,7 +419,8 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               data-board-action=""
               className="board-action shrink-0"
               style={{ pointerEvents: "all" }}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => onBoardActionTouch(editor, event)}
+              onTouchStart={(event) => onBoardActionTouch(editor, event)}
               onClick={onToggleCollapse}
             >
               {promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
@@ -420,6 +439,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
                   showInlineFigures && "flex-1",
                 )}
                 onPointerDown={onMathPointerDown}
+                onTouchStart={(event) => onProseTouchStart(editor, event)}
               >
                 <BoardRichText text={body} />
               </div>
@@ -455,7 +475,8 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               className="board-action"
               style={{ pointerEvents: busy ? "none" : "all" }}
               disabled={busy}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => onBoardActionTouch(editor, event)}
+              onTouchStart={(event) => onBoardActionTouch(editor, event)}
               onClick={onSolutionClick}
             >
               {solutionLabel}
@@ -502,6 +523,7 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
           data-shape-id={shape.id}
           className="flex gap-2.5 text-sm leading-7 text-card-foreground"
           onPointerDown={onMathPointerDown}
+          onTouchStart={(event) => onProseTouchStart(editor, event)}
         >
           <span className="w-4 shrink-0 pt-0.5 text-[11px] font-medium tabular-nums text-muted-foreground/70">
             {shape.props.index + 1}
@@ -515,7 +537,8 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
               data-board-action=""
               className="board-action"
               style={{ pointerEvents: "all" }}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => onBoardActionTouch(editor, event)}
+              onTouchStart={(event) => onBoardActionTouch(editor, event)}
               onClick={onToggleExplanation}
             >
               {explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}
@@ -528,6 +551,7 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
 }
 
 function ResultBody({ shape }: { shape: IBoardResultShape }) {
+  const editor = useEditor()
   const compact = useCompact(shape.id)
   const { t } = useLanguage()
   const bodyRef = useMeasuredHeight(shape, `${shape.props.value}:${shape.props.summary}`, compact)
@@ -546,6 +570,7 @@ function ResultBody({ shape }: { shape: IBoardResultShape }) {
         data-shape-id={shape.id}
         className={CARD_CLASS}
         onPointerDown={onMathPointerDown}
+        onTouchStart={(event) => onProseTouchStart(editor, event)}
       >
         <span className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
           {t("desk.result")}
@@ -634,7 +659,7 @@ export class BoardQuestionShapeUtil extends BaseBoxShapeUtil<IBoardQuestionShape
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {
@@ -691,7 +716,7 @@ export class BoardStepShapeUtil extends BaseBoxShapeUtil<IBoardStepShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {
@@ -737,7 +762,7 @@ export class BoardResultShapeUtil extends BaseBoxShapeUtil<IBoardResultShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {
@@ -793,7 +818,7 @@ export class BoardChartShapeUtil extends BaseBoxShapeUtil<IBoardChartShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {
@@ -847,7 +872,7 @@ export class BoardBranchShapeUtil extends BaseBoxShapeUtil<IBoardBranchShape> {
   }
 
   canDelete() {
-    return false
+    return true
   }
 
   override canResize() {

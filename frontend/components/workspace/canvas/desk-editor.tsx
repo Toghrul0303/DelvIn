@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useRef, type MouseEvent, type PointerEvent } from "react"
 import {
+  createShapeId,
   DefaultContextMenu,
   DefaultToolbar,
   DrawToolbarItem,
@@ -12,13 +13,13 @@ import {
   TldrawUiButtonIcon,
   TldrawUiContextualToolbar,
   TldrawUiToolbarButton,
-  useActions,
   useEditor,
   useTranslation,
   useValue,
   type Editor,
   type TLComponents,
   type TLShape,
+  type TLShapeId,
   type TLStore,
   type TLUiContextMenuProps,
   type TLUiOverrides,
@@ -33,13 +34,17 @@ import { DeskTldraw } from "./desk-tldraw"
 import { findCalculatorShape, toggleCalculatorShape } from "./desk-calculator-shape"
 import { DESK_CARD_TYPE } from "./desk-card-shape"
 import {
+  asShapeIdList,
   BOARD_BRANCH_TYPE,
   BOARD_CHART_TYPE,
   BOARD_FIGURE_TYPE,
   BOARD_QUESTION_TYPE,
   BOARD_RESULT_TYPE,
   BOARD_STEP_TYPE,
+  isBoardQuestionShape,
 } from "./board-constants"
+
+const DUPLICATE_OFFSET = { x: 20, y: 20 }
 
 const GENERATED_SHAPE_TYPES = new Set<string>([
   BOARD_QUESTION_TYPE,
@@ -68,6 +73,142 @@ function selectionIsGenerated(editor: Editor) {
     return false
   }
   return editor.getSelectedShapes().some((shape) => walk(shape))
+}
+
+function generatedRoot(editor: Editor, shape: TLShape): TLShape {
+  let current = shape
+  const seen = new Set<string>()
+  while (!seen.has(current.id)) {
+    seen.add(current.id)
+    if (isBoardQuestionShape(current)) return current
+    const props = current.props as { parentId?: string; branchFromId?: string }
+    const nextId = props.parentId || props.branchFromId
+    if (!nextId) return current
+    const next = editor.getShape(nextId as TLShapeId)
+    if (!next || !GENERATED_SHAPE_TYPES.has(next.type)) return current
+    current = next
+  }
+  return current
+}
+
+function collectCluster(editor: Editor, root: TLShape): TLShape[] {
+  const seen = new Set<string>()
+  const out: TLShape[] = []
+  const visit = (shape: TLShape) => {
+    if (seen.has(shape.id)) return
+    seen.add(shape.id)
+    out.push(shape)
+    const props = shape.props as { childIds?: unknown; arrowIds?: unknown }
+    for (const childId of asShapeIdList(props.childIds)) {
+      const child = editor.getShape(childId)
+      if (child) visit(child)
+    }
+    for (const arrowId of asShapeIdList(props.arrowIds)) {
+      const arrow = editor.getShape(arrowId)
+      if (arrow) visit(arrow)
+    }
+    for (const binding of editor.getBindingsInvolvingShape(shape.id)) {
+      const otherId = binding.fromId === shape.id ? binding.toId : binding.fromId
+      const other = editor.getShape(otherId)
+      if (other?.type === "arrow") visit(other)
+    }
+    for (const child of editor.getCurrentPageShapes()) {
+      if (child.parentId === shape.id) visit(child)
+    }
+  }
+  visit(root)
+  return out
+}
+
+function remapValue(value: unknown, idMap: Map<string, TLShapeId>): unknown {
+  if (typeof value === "string") return idMap.get(value) ?? value
+  if (Array.isArray(value)) return value.map((item) => remapValue(item, idMap))
+  if (value && typeof value === "object") {
+    const next: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(value)) next[key] = remapValue(child, idMap)
+    return next
+  }
+  return value
+}
+
+function cloneCluster(editor: Editor, root: TLShape): TLShapeId[] {
+  const shapes = collectCluster(editor, root)
+  const idMap = new Map<string, TLShapeId>()
+  for (const shape of shapes) idMap.set(shape.id, createShapeId())
+  const pageId = editor.getCurrentPageId()
+  const bindings: { type: string; fromId: TLShapeId; toId: TLShapeId; props: object }[] = []
+  const seenBindings = new Set<string>()
+  for (const shape of shapes) {
+    for (const binding of editor.getBindingsInvolvingShape(shape.id)) {
+      if (seenBindings.has(binding.id)) continue
+      const fromId = idMap.get(binding.fromId)
+      const toId = idMap.get(binding.toId)
+      if (!fromId || !toId) continue
+      seenBindings.add(binding.id)
+      bindings.push({
+        type: binding.type,
+        fromId,
+        toId,
+        props: JSON.parse(JSON.stringify(binding.props)) as object,
+      })
+    }
+  }
+  editor.createShapes(
+    shapes.map((shape) => ({
+      id: idMap.get(shape.id)!,
+      type: shape.type,
+      x: shape.x + DUPLICATE_OFFSET.x,
+      y: shape.y + DUPLICATE_OFFSET.y,
+      rotation: shape.rotation,
+      opacity: shape.opacity,
+      isLocked: shape.isLocked,
+      parentId: shape.parentId === pageId ? pageId : (idMap.get(shape.parentId) ?? shape.parentId),
+      props: remapValue(JSON.parse(JSON.stringify(shape.props)), idMap),
+    })) as Parameters<Editor["createShapes"]>[0],
+  )
+  if (bindings.length > 0) {
+    editor.createBindings(bindings as Parameters<Editor["createBindings"]>[0])
+  }
+  return shapes.map((shape) => idMap.get(shape.id)!)
+}
+
+function deleteCanvasSelection(editor: Editor) {
+  const ids = new Set<TLShapeId>()
+  for (const shape of editor.getSelectedShapes()) {
+    if (GENERATED_SHAPE_TYPES.has(shape.type)) {
+      for (const member of collectCluster(editor, generatedRoot(editor, shape))) ids.add(member.id)
+    } else {
+      ids.add(shape.id)
+    }
+  }
+  if (ids.size === 0) return
+  editor.markHistoryStoppingPoint("delete")
+  editor.run(() => {
+    editor.deleteShapes([...ids])
+  }, { ignoreShapeLock: true })
+}
+
+function duplicateCanvasSelection(editor: Editor) {
+  const plain: TLShapeId[] = []
+  const roots = new Map<string, TLShape>()
+  for (const shape of editor.getSelectedShapes()) {
+    if (GENERATED_SHAPE_TYPES.has(shape.type)) {
+      const root = generatedRoot(editor, shape)
+      roots.set(root.id, root)
+    } else {
+      plain.push(shape.id)
+    }
+  }
+  const created: TLShapeId[] = []
+  editor.markHistoryStoppingPoint("duplicate")
+  editor.run(() => {
+    if (plain.length > 0) {
+      editor.duplicateShapes(plain, DUPLICATE_OFFSET)
+      created.push(...editor.getSelectedShapeIds())
+    }
+    for (const root of roots.values()) created.push(...cloneCluster(editor, root))
+    if (created.length > 0) editor.setSelectedShapes(created)
+  }, { ignoreShapeLock: true })
 }
 
 function DeskGeneratedContextMenu(props: TLUiContextMenuProps) {
@@ -164,7 +305,6 @@ function DeskTapButton({
 
 function SelectionActionsToolbar() {
   const editor = useEditor()
-  const actions = useActions()
   const msg = useTranslation()
   const show = useValue(
     "selection-actions",
@@ -173,11 +313,11 @@ function SelectionActionsToolbar() {
   )
   const getSelectionBounds = useCallback(() => editor.getSelectionScreenBounds(), [editor])
   const deleteSelection = useCallback(() => {
-    void actions.delete?.onSelect("actions-menu")
-  }, [actions])
+    deleteCanvasSelection(editor)
+  }, [editor])
   const duplicateSelection = useCallback(() => {
-    void actions.duplicate?.onSelect("actions-menu")
-  }, [actions])
+    duplicateCanvasSelection(editor)
+  }, [editor])
   if (!show) return null
   return (
     <TldrawUiContextualToolbar
@@ -225,13 +365,15 @@ const deskUiOverrides: TLUiOverrides = {
     return tools
   },
   actions(editor, actions) {
-    const selectionIsGeneratedNow = () => selectionIsGenerated(editor)
-    for (const id of ["delete", "ungroup"] as const) {
-      const action = actions[id]
-      if (!action) continue
-      const prev = action.onSelect.bind(action)
-      action.onSelect = (source) => {
-        if (selectionIsGeneratedNow()) return
+    const del = actions.delete
+    if (del) del.onSelect = () => deleteCanvasSelection(editor)
+    const duplicate = actions.duplicate
+    if (duplicate) duplicate.onSelect = () => duplicateCanvasSelection(editor)
+    const ungroup = actions.ungroup
+    if (ungroup) {
+      const prev = ungroup.onSelect.bind(ungroup)
+      ungroup.onSelect = (source) => {
+        if (selectionIsGenerated(editor)) return
         return prev(source)
       }
     }

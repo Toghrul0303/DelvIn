@@ -411,6 +411,9 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
   box-shadow: 0 8px 28px rgba(15, 10, 20, 0.12);
   padding: 4px;
 }
+.desk-tldraw .tlui-main-toolbar__extras {
+  display: none !important;
+}
 @media (max-width: 767px) {
   .desk-tldraw .tlui-layout__bottom,
   .desk-tldraw .tl-toolbar {
@@ -431,9 +434,6 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
   }
   .desk-tldraw .tlui-main-toolbar--vertical {
     height: auto !important;
-  }
-  .desk-tldraw .tlui-main-toolbar__extras {
-    display: none !important;
   }
 }
 @media (max-width: 1023px) {
@@ -492,6 +492,21 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
 .board-node [data-highlight-source],
 .board-node .board-action {
   pointer-events: all !important;
+}
+
+@media (pointer: coarse) {
+  .desk-tldraw [data-desk-card-drag],
+  .desk-tldraw .board-node > .px-3 {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+  }
+  .desk-tldraw [data-highlight-source],
+  .desk-tldraw [data-highlight-source] * {
+    -webkit-touch-callout: default !important;
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
 }
 
 .board-node {

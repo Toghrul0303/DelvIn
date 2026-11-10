@@ -1175,21 +1175,25 @@ export function setQuestionPromptHidden(editor: Editor, questionId: TLShapeId, h
   const shape = editor.getShape(questionId)
   if (!shape || !isBoardQuestionShape(shape)) return
   if (Boolean(shape.props.isPromptHidden) === hidden) return
-  editor.updateShape({
-    id: shape.id,
-    type: BOARD_QUESTION_TYPE,
-    props: hidden
-      ? { isPromptHidden: true, h: COMPACT_QUESTION_H }
-      : { isPromptHidden: false },
-  })
-  applyClusterVisibility(editor, questionId)
+  editor.run(() => {
+    editor.updateShape({
+      id: shape.id,
+      type: BOARD_QUESTION_TYPE,
+      props: hidden
+        ? { isPromptHidden: true, h: COMPACT_QUESTION_H }
+        : { isPromptHidden: false },
+    })
+    applyClusterVisibility(editor, questionId)
+  }, { ignoreShapeLock: true })
 }
 
 export function setSolutionHidden(editor: Editor, questionId: TLShapeId, hidden: boolean) {
   const shape = editor.getShape(questionId)
   if (!shape || !isBoardQuestionShape(shape)) return
-  editor.updateShape({ id: shape.id, type: BOARD_QUESTION_TYPE, props: { solutionHidden: hidden } })
-  applyClusterVisibility(editor, questionId)
+  editor.run(() => {
+    editor.updateShape({ id: shape.id, type: BOARD_QUESTION_TYPE, props: { solutionHidden: hidden } })
+    applyClusterVisibility(editor, questionId)
+  }, { ignoreShapeLock: true })
 }
 
 export function listLateralBranchIds(editor: Editor, stepId: TLShapeId): TLShapeId[] {
@@ -1290,7 +1294,9 @@ export function setBranchExplanationHidden(editor: Editor, stepId: TLShapeId, hi
 export function toggleBranchExplanation(editor: Editor, stepId: TLShapeId) {
   const step = editor.getShape(stepId)
   if (!step || !isBoardStepShape(step)) return
-  setBranchExplanationHidden(editor, stepId, !stepExplanationHidden(step))
+  editor.run(() => {
+    setBranchExplanationHidden(editor, stepId, !stepExplanationHidden(step))
+  }, { ignoreShapeLock: true })
 }
 
 function mainColumnGroupIds(editor: Editor, question: BoardQuestionShape): TLShapeId[] {
