@@ -1,14 +1,6 @@
 "use client"
 
-import {
-  useEffect,
-  useRef,
-  type CSSProperties,
-  type MouseEvent,
-  type PointerEvent,
-  type ReactNode,
-  type TouchEvent,
-} from "react"
+import { useEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
@@ -77,14 +69,6 @@ const REMEASURE_DELAYS_MS = [80, 240, 640]
 
 const CARD_CLASS =
   "box-border flex w-full flex-col gap-2 rounded-xl border border-black/[0.08] bg-card px-3 py-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]"
-
-function onBoardActionTouch(
-  editor: Editor,
-  event: PointerEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>,
-) {
-  event.stopPropagation()
-  editor.markEventAsHandled(event)
-}
 
 export type IBoardQuestionShape = TLShape<"board-question">
 export type IBoardStepShape = TLShape<"board-step">
@@ -419,8 +403,8 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               data-board-action=""
               className="board-action shrink-0"
               style={{ pointerEvents: "all" }}
-              onPointerDown={(event) => onBoardActionTouch(editor, event)}
-              onTouchStart={(event) => onBoardActionTouch(editor, event)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
               onClick={onToggleCollapse}
             >
               {promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
@@ -475,8 +459,8 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               className="board-action"
               style={{ pointerEvents: busy ? "none" : "all" }}
               disabled={busy}
-              onPointerDown={(event) => onBoardActionTouch(editor, event)}
-              onTouchStart={(event) => onBoardActionTouch(editor, event)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
               onClick={onSolutionClick}
             >
               {solutionLabel}
@@ -537,8 +521,8 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
               data-board-action=""
               className="board-action"
               style={{ pointerEvents: "all" }}
-              onPointerDown={(event) => onBoardActionTouch(editor, event)}
-              onTouchStart={(event) => onBoardActionTouch(editor, event)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
               onClick={onToggleExplanation}
             >
               {explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}

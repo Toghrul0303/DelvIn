@@ -148,9 +148,12 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
         {onClose ? (
           <button
             type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
             onClick={onClose}
             aria-label={t("desk.closePanel")}
             className="ml-auto grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            style={{ touchAction: "manipulation" }}
           >
             <X className="size-3.5" aria-hidden="true" />
           </button>
@@ -170,7 +173,10 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
               key={key}
               type="button"
               aria-label={key === "⌫" ? "Backspace" : key}
+              onPointerDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
               onClick={() => press(key)}
+              style={{ touchAction: "manipulation" }}
               className={cn(
                 "grid h-10 place-items-center rounded-lg text-sm font-medium transition-colors",
                 op && "bg-primary/12 text-primary hover:bg-primary/20",

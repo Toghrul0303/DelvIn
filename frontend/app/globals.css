@@ -537,6 +537,12 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
   padding: 6px 12px;
   min-height: 28px;
   touch-action: manipulation;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+.board-action * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
 }
 .board-action:hover:not(:disabled) {
   color: var(--foreground);
