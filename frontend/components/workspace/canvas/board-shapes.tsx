@@ -20,7 +20,7 @@ import {
   type TLShapeId,
   type RecordProps,
 } from "tldraw"
-import { Bookmark } from "lucide-react"
+import { Bookmark, Eye, EyeOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { isRenderableQuestionPrompt, sanitizeCanvasPrompt } from "@/lib/parse-task-assignment"
 import { notifyQuestionPainted, useDesk } from "../desk-context"
@@ -424,11 +424,17 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               data-board-action=""
               className="board-action shrink-0"
               style={{ pointerEvents: "all" }}
+              aria-label={promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
+              title={promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
               onPointerDown={(event) => event.stopPropagation()}
               onTouchStart={(event) => event.stopPropagation()}
               onClick={onToggleCollapse}
             >
-              {promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
+              {promptHidden ? (
+                <Eye className="size-3.5" aria-hidden="true" />
+              ) : (
+                <EyeOff className="size-3.5" aria-hidden="true" />
+              )}
             </CanvasCaptureButton>
           </div>
         </div>
@@ -480,11 +486,19 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               className="board-action"
               style={{ pointerEvents: busy ? "none" : "all" }}
               disabled={busy}
+              aria-label={busy ? undefined : solutionLabel}
+              title={busy ? undefined : solutionLabel}
               onPointerDown={(event) => event.stopPropagation()}
               onTouchStart={(event) => event.stopPropagation()}
               onClick={onSolutionClick}
             >
-              {solutionLabel}
+              {busy ? (
+                solutionLabel
+              ) : (status === "solved" || childCount > 0) && !solutionHidden ? (
+                <EyeOff className="size-3.5" aria-hidden="true" />
+              ) : (
+                <Eye className="size-3.5" aria-hidden="true" />
+              )}
             </CanvasCaptureButton>
           </div>
         ) : null}
@@ -542,11 +556,17 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
               data-board-action=""
               className="board-action"
               style={{ pointerEvents: "all" }}
+              aria-label={explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}
+              title={explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}
               onPointerDown={(event) => event.stopPropagation()}
               onTouchStart={(event) => event.stopPropagation()}
               onClick={onToggleExplanation}
             >
-              {explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}
+              {explanationHidden ? (
+                <Eye className="size-3.5" aria-hidden="true" />
+              ) : (
+                <EyeOff className="size-3.5" aria-hidden="true" />
+              )}
             </CanvasCaptureButton>
           </div>
         ) : null}
