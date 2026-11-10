@@ -6,6 +6,24 @@ import { cn } from "@/lib/utils"
 import { useCanvasButton } from "./canvas/use-canvas-button"
 import { useLanguage } from "./language-context"
 
+function SvgLabel({ text }: { text: string }) {
+  return (
+    <svg className="w-5 h-5 pointer-events-none select-none" viewBox="0 0 24 24">
+      <text
+        x="50%"
+        y="50%"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="currentColor"
+        fontSize="16"
+        fontWeight="600"
+      >
+        {text}
+      </text>
+    </svg>
+  )
+}
+
 function KeyButton({
   label,
   onPress,
@@ -210,7 +228,7 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
                 !op && !danger && "bg-secondary/60 text-foreground hover:bg-accent",
               )}
             >
-              {key === "⌫" ? <Delete className="size-4" aria-hidden="true" /> : key}
+              {key === "⌫" ? <Delete className="size-4" aria-hidden="true" /> : <SvgLabel text={key} />}
             </KeyButton>
           )
         })}
