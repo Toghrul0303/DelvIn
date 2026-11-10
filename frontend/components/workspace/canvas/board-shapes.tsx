@@ -1,6 +1,13 @@
 "use client"
 
-import { useEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  type ComponentProps,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react"
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
@@ -21,6 +28,7 @@ import { useLanguage } from "../language-context"
 import { useMemoryBox, type QuestionClusterShape } from "../memory-box-context"
 import { BoardChartPlot } from "./board-chart-plot"
 import { BoardRichText, formatBoardValue, onMathPointerDown, onProseTouchStart } from "./board-math"
+import { useCanvasButton } from "./use-canvas-button"
 import {
   BOARD_BRANCH_TYPE,
   BOARD_CHART_TYPE,
@@ -69,6 +77,19 @@ const REMEASURE_DELAYS_MS = [80, 240, 640]
 
 const CARD_CLASS =
   "box-border flex w-full flex-col gap-2 rounded-xl border border-black/[0.08] bg-card px-3 py-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]"
+
+function CanvasCaptureButton({
+  children,
+  ...props
+}: ComponentProps<"button">) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useCanvasButton(ref)
+  return (
+    <button {...props} ref={ref}>
+      {children}
+    </button>
+  )
+}
 
 export type IBoardQuestionShape = TLShape<"board-question">
 export type IBoardStepShape = TLShape<"board-step">
@@ -398,7 +419,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
             >
               <Bookmark className="size-3.5" aria-hidden="true" />
             </button>
-            <button
+            <CanvasCaptureButton
               type="button"
               data-board-action=""
               className="board-action shrink-0"
@@ -408,7 +429,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               onClick={onToggleCollapse}
             >
               {promptHidden ? t("desk.expandQuestion") : t("desk.collapseQuestion")}
-            </button>
+            </CanvasCaptureButton>
           </div>
         </div>
 
@@ -453,7 +474,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               selected || busy ? "opacity-100" : "opacity-60 hover:opacity-100",
             )}
           >
-            <button
+            <CanvasCaptureButton
               type="button"
               data-board-action=""
               className="board-action"
@@ -464,7 +485,7 @@ function QuestionBody({ shape }: { shape: IBoardQuestionShape }) {
               onClick={onSolutionClick}
             >
               {solutionLabel}
-            </button>
+            </CanvasCaptureButton>
           </div>
         ) : null}
       </div>
@@ -516,7 +537,7 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
         </div>
         {hasLateral ? (
           <div className="flex items-center gap-1 pl-6">
-            <button
+            <CanvasCaptureButton
               type="button"
               data-board-action=""
               className="board-action"
@@ -526,7 +547,7 @@ function StepBody({ shape }: { shape: IBoardStepShape }) {
               onClick={onToggleExplanation}
             >
               {explanationHidden ? t("desk.showExplanation") : t("desk.hideExplanation")}
-            </button>
+            </CanvasCaptureButton>
           </div>
         ) : null}
       </div>

@@ -1,9 +1,41 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState, type CSSProperties, type ReactNode } from "react"
 import { Calculator, Delete, X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useCanvasButton } from "./canvas/use-canvas-button"
 import { useLanguage } from "./language-context"
+
+function KeyButton({
+  label,
+  onPress,
+  className,
+  style,
+  children,
+}: {
+  label: string
+  onPress: () => void
+  className?: string
+  style?: CSSProperties
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useCanvasButton(ref)
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label={label}
+      onPointerDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+      onClick={onPress}
+      className={className}
+      style={style}
+    >
+      {children}
+    </button>
+  )
+}
 
 const KEYS = [
   ["(", ")", "√", "^"],
@@ -146,17 +178,14 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
         </span>
         <h3 className="font-display text-sm font-semibold">{t("desk.calculator")}</h3>
         {onClose ? (
-          <button
-            type="button"
-            onPointerDown={(event) => event.stopPropagation()}
-            onTouchStart={(event) => event.stopPropagation()}
-            onClick={onClose}
-            aria-label={t("desk.closePanel")}
+          <KeyButton
+            label={t("desk.closePanel")}
+            onPress={onClose}
             className="ml-auto grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             style={{ touchAction: "manipulation" }}
           >
             <X className="size-3.5" aria-hidden="true" />
-          </button>
+          </KeyButton>
         ) : null}
       </div>
       <div className="mb-2 flex min-h-10 items-center justify-end rounded-xl bg-secondary/70 px-3 py-2">
@@ -169,13 +198,10 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
           const op = ["÷", "×", "−", "+", "=", "%", "(", ")", "√", "^"].includes(key)
           const danger = key === "C"
           return (
-            <button
+            <KeyButton
               key={key}
-              type="button"
-              aria-label={key === "⌫" ? "Backspace" : key}
-              onPointerDown={(event) => event.stopPropagation()}
-              onTouchStart={(event) => event.stopPropagation()}
-              onClick={() => press(key)}
+              label={key === "⌫" ? "Backspace" : key}
+              onPress={() => press(key)}
               style={{ touchAction: "manipulation" }}
               className={cn(
                 "grid h-10 place-items-center rounded-lg text-sm font-medium transition-colors",
@@ -185,7 +211,7 @@ export function CalculatorKeypad({ onClose }: { onClose?: () => void }) {
               )}
             >
               {key === "⌫" ? <Delete className="size-4" aria-hidden="true" /> : key}
-            </button>
+            </KeyButton>
           )
         })}
       </div>
