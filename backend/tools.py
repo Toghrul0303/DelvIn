@@ -3573,7 +3573,7 @@ def _build_tagged_chapter_blob(
     return "\n\n".join(parts)
 
 
-PIPELINE_STATUS_INDEX = "Indexing document (the first open of a textbook can take a few minutes)..."
+PIPELINE_STATUS_INDEX = "Looking through the document..."
 PIPELINE_STATUS_LOCATE = "Locating target question in document..."
 PIPELINE_STATUS_VISION = "Page located, analyzing visual context..."
 PIPELINE_STATUS_MATH = "Executing mathematical engine & formulating solution..."

@@ -668,8 +668,11 @@ Call python_code_executor once with type "calculation" and put the full explanat
 Answer in the chat only. Do not call python_code_executor. Do not emit canvas steps or a new desk box.`
 }
 
+const INDEXING_STATUS = "Looking through the document..."
+const INDEXING_HOLD_MS = 1200
+
 const PIPELINE_STATUSES = new Set([
-  "Indexing document (the first open of a textbook can take a few minutes)...",
+  INDEXING_STATUS,
   "Locating target question in document...",
   "Page located, analyzing visual context...",
   "Executing mathematical engine & formulating solution...",
@@ -1321,8 +1324,16 @@ export function ChatPane({
     abortRef.current = controller
     pendingSolveRef.current = { requestId: turnRequestId, shapeId: turnAnchorId }
     let turnStatusClosed = false
+    let indexingHold: number | null = null
+    const clearIndexingHold = () => {
+      if (indexingHold != null) {
+        window.clearTimeout(indexingHold)
+        indexingHold = null
+      }
+    }
     const closeTurnStatus = () => {
       turnStatusClosed = true
+      clearIndexingHold()
       setPipelineStatus("")
     }
 
@@ -1370,7 +1381,18 @@ export function ChatPane({
         signal: controller.signal,
         onStatus: (status) => {
           if (turnStatusClosed) return
-          if (PIPELINE_STATUSES.has(status)) setPipelineStatus(status)
+          if (!PIPELINE_STATUSES.has(status)) return
+          if (status === INDEXING_STATUS) {
+            clearIndexingHold()
+            indexingHold = window.setTimeout(() => {
+              indexingHold = null
+              if (turnStatusClosed) return
+              setPipelineStatus(INDEXING_STATUS)
+            }, INDEXING_HOLD_MS)
+            return
+          }
+          clearIndexingHold()
+          setPipelineStatus(status)
         },
         onChatChunk: (chunk) => {
           if (explainSource === "desk") return
