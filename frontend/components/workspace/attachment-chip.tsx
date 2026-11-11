@@ -23,6 +23,27 @@ export function toChatAttachment(file: File): ChatAttachment {
   }
 }
 
+function ImageThumb({
+  src,
+  name,
+  onPreview,
+}: {
+  src: string
+  name: string
+  onPreview: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPreview}
+      aria-label={name}
+      className="block overflow-hidden rounded-lg border border-border"
+    >
+      <img src={src} alt="" className="size-16 object-cover" />
+    </button>
+  )
+}
+
 function KindIcon({ kind }: { kind: AttachmentKind }) {
   const iconClass = "size-3.5 shrink-0"
   if (kind === "pdf") return <FileText className={iconClass} aria-hidden="true" />
@@ -33,11 +54,15 @@ function KindIcon({ kind }: { kind: AttachmentKind }) {
 export function AttachmentChip({
   attachment,
   variant = "on-bubble",
+  previewUrl,
+  onPreview,
 }: {
   attachment: ChatAttachment
   variant?: "on-bubble" | "muted"
+  previewUrl?: string
+  onPreview?: () => void
 }) {
-  return (
+  const chip = (
     <span
       title={attachment.name}
       className={cn(
@@ -51,6 +76,13 @@ export function AttachmentChip({
       <span className="min-w-0 truncate">{attachment.name}</span>
     </span>
   )
+  if (attachment.kind !== "image" || !previewUrl || !onPreview) return chip
+  return (
+    <span className="inline-flex flex-col items-end gap-1.5">
+      <ImageThumb src={previewUrl} name={attachment.name} onPreview={onPreview} />
+      {chip}
+    </span>
+  )
 }
 
 export function PendingFileChip({
@@ -58,11 +90,15 @@ export function PendingFileChip({
   onRemove,
   disabled,
   statusLabel,
+  previewUrl,
+  onPreview,
 }: {
   file: File
   onRemove: () => void
   disabled?: boolean
   statusLabel?: string
+  previewUrl?: string
+  onPreview?: () => void
 }) {
   const attachment = toChatAttachment(file)
   return (
@@ -70,7 +106,11 @@ export function PendingFileChip({
       title={attachment.name}
       className="inline-flex max-w-full items-center gap-2 rounded-xl border border-border bg-secondary/60 px-2.5 py-1.5 text-xs"
     >
-      <KindIcon kind={attachment.kind} />
+      {attachment.kind === "image" && previewUrl && onPreview ? (
+        <ImageThumb src={previewUrl} name={attachment.name} onPreview={onPreview} />
+      ) : (
+        <KindIcon kind={attachment.kind} />
+      )}
       <span className="min-w-0 max-w-[14rem]">
         <span className="block truncate font-medium text-foreground">{attachment.name}</span>
         {statusLabel ? (

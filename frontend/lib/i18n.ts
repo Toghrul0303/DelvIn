@@ -105,6 +105,7 @@ const en = {
     templates: "Prompt templates",
     attach: "Attach a document or image",
     dropFiles: "Drop files here",
+    closePreview: "Close",
     thinking: "Delvin is thinking",
     aborted: "You stopped this response",
     redo: "Try again",

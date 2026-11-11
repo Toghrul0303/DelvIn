@@ -34,7 +34,8 @@ import {
   type QuestionStatus,
   type SuggestedAction,
 } from "./data"
-import { AttachmentChip, PendingFileChip, toChatAttachment } from "./attachment-chip"
+import { AttachmentChip, fileKind, PendingFileChip, toChatAttachment } from "./attachment-chip"
+import { ImagePreviewModal } from "./image-preview-modal"
 import { useAuth } from "./auth-context"
 import { useLanguage } from "./language-context"
 import { uploadSessionPdf } from "@/lib/document-sync"
@@ -696,6 +697,9 @@ export function ChatPane({
   const [input, setInput] = useState("")
   const [saved, setSaved] = useState<Record<string, boolean>>({})
   const [attachedFile, setAttachedFile] = useState<File | null>(null)
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
+  const [pendingImageUrl, setPendingImageUrl] = useState<string | null>(null)
+  const [sentImageUrls, setSentImageUrls] = useState<Record<string, string>>({})
   const [isDragging, setIsDragging] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [pipelineStatus, setPipelineStatus] = useState("")
@@ -859,12 +863,59 @@ export function ChatPane({
   const pendingFileRef = useRef<File | null>(null)
   const attachedFileRef = useRef<File | null>(null)
   attachedFileRef.current = attachedFile
+  const pendingImageUrlRef = useRef<string | null>(null)
+  const keepImageUrlRef = useRef(new Set<string>())
+  const sentImageUrlsRef = useRef<Record<string, string>>({})
+  sentImageUrlsRef.current = sentImageUrls
   const [pendingFileBound, setPendingFileBound] = useState(false)
   const [pendingSelect, setPendingSelect] = useState<{ start: number; end: number } | null>(
     null,
   )
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const templatesMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!attachedFile || fileKind(attachedFile) !== "image") {
+      pendingImageUrlRef.current = null
+      setPendingImageUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(attachedFile)
+    pendingImageUrlRef.current = url
+    setPendingImageUrl(url)
+    return () => {
+      if (keepImageUrlRef.current.has(url)) {
+        keepImageUrlRef.current.delete(url)
+        if (pendingImageUrlRef.current === url) pendingImageUrlRef.current = null
+        return
+      }
+      URL.revokeObjectURL(url)
+      if (pendingImageUrlRef.current === url) pendingImageUrlRef.current = null
+      setPendingImageUrl((current) => (current === url ? null : current))
+      setPreviewImageUrl((current) => (current === url ? null : current))
+    }
+  }, [attachedFile])
+
+  const bindSentImage = (messageId: string, file: File | null | undefined) => {
+    if (!file || fileKind(file) !== "image") return
+    const pendingUrl = pendingImageUrlRef.current
+    const url = pendingUrl ?? URL.createObjectURL(file)
+    if (pendingUrl) keepImageUrlRef.current.add(pendingUrl)
+    const next = { ...sentImageUrlsRef.current, [messageId]: url }
+    sentImageUrlsRef.current = next
+    setSentImageUrls(next)
+  }
+
+  const revokeSentImages = () => {
+    for (const url of Object.values(sentImageUrlsRef.current)) URL.revokeObjectURL(url)
+    sentImageUrlsRef.current = {}
+    setSentImageUrls({})
+    setPreviewImageUrl(null)
+  }
+
+  useEffect(() => () => {
+    for (const url of Object.values(sentImageUrlsRef.current)) URL.revokeObjectURL(url)
+  }, [])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -920,6 +971,7 @@ export function ChatPane({
       discardPdfUpload()
       setPendingSelect(null)
       setTemplatesOpen(false)
+      revokeSentImages()
     }
     const enable = window.setTimeout(() => {
       persistReady.current = true
@@ -1269,6 +1321,9 @@ export function ChatPane({
       content: publicQuery,
       attachment: options?.attachment,
       questionId: stampQuestionId,
+    }
+    if (fileToSend && options?.attachment?.kind === "image") {
+      bindSentImage(userMessage.id, fileToSend)
     }
     const aiDraft: ChatMessage = {
       id: aiMessageId,
@@ -1738,11 +1793,13 @@ export function ChatPane({
     if (!text && composerFile) {
       pendingFileRef.current = composerFile
       setPendingFileBound(true)
+      const messageId = crypto.randomUUID()
+      bindSentImage(messageId, composerFile)
       setAttachedFile(null)
       setMessages((prev) => [
         ...prev.filter((m) => m.intent !== "file-prompt"),
         {
-          id: crypto.randomUUID(),
+          id: messageId,
           role: "user",
           content: "",
           attachment: toChatAttachment(composerFile),
@@ -1770,11 +1827,13 @@ export function ChatPane({
         setPendingFileBound(true)
       }
       setInput("")
+      const messageId = crypto.randomUUID()
+      if (fileToKeep) bindSentImage(messageId, fileToKeep)
       setAttachedFile(null)
       setMessages((prev) => [
         ...prev.filter((m) => m.intent !== "file-prompt"),
         {
-          id: crypto.randomUUID(),
+          id: messageId,
           role: "user",
           content: text,
           attachment: fileToKeep ? toChatAttachment(fileToKeep) : undefined,
@@ -2081,6 +2140,8 @@ export function ChatPane({
                 : ""
             }
             onRedo={() => redoAborted(m)}
+            imagePreviewUrl={sentImageUrls[m.id]}
+            onPreviewImage={setPreviewImageUrl}
             generating={isSending && m.id === streamingAiIdRef.current}
             suggestedDisabled={isSending}
             onSuggestedAction={(action) => {
@@ -2156,6 +2217,8 @@ export function ChatPane({
             <PendingFileChip
               file={attachedFile}
               disabled={isSending}
+              previewUrl={pendingImageUrl ?? undefined}
+              onPreview={pendingImageUrl ? () => setPreviewImageUrl(pendingImageUrl) : undefined}
               statusLabel={
                 isPdfFile(attachedFile) && pdfUploadKeyShown === pdfUploadKey(threadId, attachedFile)
                   ? pdfUploadPhase === "uploading"
@@ -2302,6 +2365,13 @@ export function ChatPane({
           </div>
         </div>
       ) : null}
+      {previewImageUrl ? (
+        <ImagePreviewModal
+          src={previewImageUrl}
+          closeLabel={t("chat.closePreview")}
+          onClose={() => setPreviewImageUrl(null)}
+        />
+      ) : null}
     </aside>
   )
 }
@@ -2439,6 +2509,8 @@ function MessageBubble({
   redoDisabled,
   statusText,
   onRedo,
+  imagePreviewUrl,
+  onPreviewImage,
   generating,
 }: {
   message: ChatMessage
@@ -2456,6 +2528,8 @@ function MessageBubble({
   redoDisabled?: boolean
   statusText?: string
   onRedo?: () => void
+  imagePreviewUrl?: string
+  onPreviewImage?: (url: string) => void
   generating?: boolean
 }) {
   const { t } = useLanguage()
@@ -2480,7 +2554,16 @@ function MessageBubble({
             </div>
           ) : null}
           {message.attachment ? (
-            <AttachmentChip attachment={message.attachment} variant="muted" />
+            <AttachmentChip
+              attachment={message.attachment}
+              variant="muted"
+              previewUrl={imagePreviewUrl}
+              onPreview={
+                imagePreviewUrl && onPreviewImage
+                  ? () => onPreviewImage(imagePreviewUrl)
+                  : undefined
+              }
+            />
           ) : null}
         </div>
       </div>
