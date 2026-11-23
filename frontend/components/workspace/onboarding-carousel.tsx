@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ArrowLeft, ArrowRight, X } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -61,6 +61,7 @@ const slides: OnboardingSlide[] = [
 
 export function OnboardingCarousel({ onDismiss }: { onDismiss: () => void }) {
   const [active, setActive] = useState(0)
+  const videoRefs = useRef<Array<HTMLVideoElement | null>>([])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -69,6 +70,22 @@ export function OnboardingCarousel({ onDismiss }: { onDismiss: () => void }) {
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [onDismiss])
+
+  useEffect(() => {
+    videoRefs.current.forEach((video, index) => {
+      if (!video) return
+      if (index === active) {
+        try {
+          video.currentTime = 0
+        } catch {
+          /* metadata may not be ready yet */
+        }
+        void video.play().catch(() => {})
+        return
+      }
+      video.pause()
+    })
+  }, [active])
 
   const slide = slides[active]
   const isLast = active === slides.length - 1
@@ -105,24 +122,33 @@ export function OnboardingCarousel({ onDismiss }: { onDismiss: () => void }) {
           <span className="hidden sm:inline">Skip tour</span>
           <X className="size-4" aria-hidden="true" />
         </button>
-        <div
-          key={active}
-          className="animate-in fade-in fill-mode-both relative grid items-center gap-6 px-1 pt-12 pb-2 duration-300 sm:gap-10 sm:px-3 sm:pt-5 sm:pb-3 md:grid-cols-[1.12fr_.88fr] md:gap-11 md:px-5 md:py-5"
-        >
+        <div className="animate-in fade-in fill-mode-both relative grid items-center gap-6 px-1 pt-12 pb-2 duration-300 sm:gap-10 sm:px-3 sm:pt-5 sm:pb-3 md:grid-cols-[1.12fr_.88fr] md:gap-11 md:px-5 md:py-5">
           <div className="relative min-w-0">
-            <div className="relative aspect-[16/8.5] w-full overflow-hidden rounded-[1.15rem] border border-border bg-muted">
-              <video
-                className={cn(
-                  "absolute bottom-0 left-0 h-[106.5%] w-full object-cover",
-                  slide.videoClassName,
-                )}
-                src={VIDEO_SOURCES[active]}
-                autoPlay
-                loop
-                muted
-                playsInline
-                aria-label={`${slide.title} walkthrough`}
-              />
+            <div className="relative aspect-[16/8.5] w-full overflow-hidden rounded-[1.15rem] border border-border bg-muted/30">
+              {VIDEO_SOURCES.map((src, index) => {
+                const item = slides[index]
+                const isActive = index === active
+                return (
+                  <video
+                    key={src}
+                    ref={(node) => {
+                      videoRefs.current[index] = node
+                    }}
+                    className={cn(
+                      "absolute bottom-0 left-0 h-[106.5%] w-full object-cover transition-opacity duration-200",
+                      isActive ? "z-10 opacity-100" : "pointer-events-none z-0 opacity-0",
+                      item?.videoClassName,
+                    )}
+                    src={src}
+                    preload="auto"
+                    muted
+                    loop
+                    playsInline
+                    aria-hidden={isActive ? undefined : true}
+                    aria-label={isActive ? `${item?.title ?? "Slide"} walkthrough` : undefined}
+                  />
+                )
+              })}
             </div>
             <p className="mt-3 flex items-center gap-1.5 px-1 text-[10px] text-muted-foreground">
               <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />
