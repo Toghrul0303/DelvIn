@@ -241,6 +241,7 @@ function SlimToolbar() {
       <TextToolbarItem />
       <TldrawUiToolbarButton
         type="tool"
+        className="desk-explain-tool"
         title={t("chat.explain")}
         tooltip={t("chat.explain")}
         isActive={armed}

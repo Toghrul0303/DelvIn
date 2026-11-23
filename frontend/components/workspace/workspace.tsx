@@ -16,6 +16,7 @@ import { StudyModeProvider } from "./study-mode-context"
 import { ExplainModeProvider } from "./explain-mode-context"
 import { WhiteboardProvider } from "./canvas/whiteboard-context"
 import { useLanguage } from "./language-context"
+import { OnboardingCarousel } from "./onboarding-carousel"
 
 export type ActiveMenu = "drawer" | "chat" | "account" | "settings" | null
 
@@ -23,6 +24,7 @@ const CHAT_WIDTH_KEY = "locknlearn.chatWidth"
 const CHAT_WIDTH_DEFAULT = 400
 const CHAT_WIDTH_MIN = 360
 const WORKSPACE_LOGIN = "/login?next=/workspace"
+const ONBOARDING_KEY = "hasSeenDelvinOnboarding"
 
 function clampChatWidth(value: number) {
   const max = Math.max(CHAT_WIDTH_MIN, Math.round(window.innerWidth * 0.33))
@@ -37,6 +39,7 @@ export function Workspace() {
   const [activeMenu, setActiveMenu] = useState<ActiveMenu>(null)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const activeMenuRef = useRef(activeMenu)
   activeMenuRef.current = activeMenu
 
@@ -113,6 +116,23 @@ export function Workspace() {
     if (authLoading || user) return
     router.replace(WORKSPACE_LOGIN)
   }, [authLoading, user, router])
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(ONBOARDING_KEY) !== "true") setShowOnboarding(true)
+    } catch {
+      setShowOnboarding(true)
+    }
+  }, [])
+
+  const dismissOnboarding = useCallback(() => {
+    try {
+      window.localStorage.setItem(ONBOARDING_KEY, "true")
+    } catch {
+      /* private browsing */
+    }
+    setShowOnboarding(false)
+  }, [])
 
   if (authLoading || !user) return null
 
@@ -194,6 +214,7 @@ export function Workspace() {
           </div>
         </div>
       </div>
+      {showOnboarding ? <OnboardingCarousel onDismiss={dismissOnboarding} /> : null}
       </ExplainModeProvider>
       </StudyModeProvider>
       </WhiteboardProvider>

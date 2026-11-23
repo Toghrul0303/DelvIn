@@ -414,6 +414,37 @@ html.explain-armed .board-node mjx-container[data-math-selected] {
 .desk-tldraw .tlui-main-toolbar__extras {
   display: none !important;
 }
+/* Explain is a custom tool button, so tldraw marks it with data-isactive
+   instead of the aria-pressed state used by Select, Hand, Draw, and the rest.
+   The highlight plate is the button's ::after (inset 4px, 8px radius). */
+.desk-tldraw .tlui-button__tool.desk-explain-tool {
+  background: transparent;
+  color: var(--primary);
+}
+.desk-tldraw .tlui-button__tool.desk-explain-tool:not([data-isactive="true"])::after {
+  background: transparent;
+  opacity: 0;
+}
+@media (hover: hover) {
+  .desk-tldraw .tlui-button__tool.desk-explain-tool:not([data-isactive="true"]):hover::after {
+    background: color-mix(in oklab, var(--muted) 60%, transparent);
+    opacity: 1;
+  }
+}
+.desk-tldraw .tlui-button__tool.desk-explain-tool[data-isactive="true"] {
+  color: white;
+}
+.desk-tldraw .tlui-button__tool.desk-explain-tool[data-isactive="true"]::after {
+  background-color: transparent;
+  background-image: linear-gradient(
+    135deg,
+    var(--brand-red) 0%,
+    var(--brand) 50%,
+    var(--brand-purple) 100%
+  );
+  box-shadow: 0 6px 16px -6px color-mix(in oklab, var(--brand) 70%, transparent);
+  opacity: 1;
+}
 @media (max-width: 767px) {
   .desk-tldraw .tlui-layout__bottom,
   .desk-tldraw .tl-toolbar {
