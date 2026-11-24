@@ -315,7 +315,7 @@ def _ndjson(job: str, url: str, payload: dict, allowed: set[str]):
     cpu=1.0,
     memory=(2048, 4096),
     timeout=700,
-    min_containers=1,
+    min_containers=0,
     scaledown_window=300,
 )
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
