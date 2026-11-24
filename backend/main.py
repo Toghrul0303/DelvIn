@@ -87,7 +87,7 @@ sentry_sdk.init(
     dsn=os.environ.get("SENTRY_DSN"),
     environment=os.environ.get("SENTRY_ENVIRONMENT", "development"),
     release=os.environ.get("SENTRY_RELEASE"),
-    #send_default_pii=False,
+    send_default_pii=False,
     traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
     enable_logs=True,
     include_local_variables=False,
